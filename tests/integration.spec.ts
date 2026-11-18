@@ -1,0 +1,726 @@
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
+import {
+	copyFile,
+	link,
+	mkdir,
+	mkdtemp,
+	readdir,
+	readFile,
+	realpath,
+	rm,
+	symlink,
+	writeFile,
+} from "node:fs/promises";
+import { join, resolve, sep } from "node:path";
+import { describe, type TestContext, test } from "node:test";
+import { parseEnv, promisify } from "node:util";
+import { git, hooksPath, repositoryIdentity } from "../src/git.ts";
+import {
+	addWorkspace,
+	applyEnv,
+	fetchWorkspaces,
+	historyGraph,
+	inspectWorkspace,
+	planEnv,
+	readRegistry,
+	registerWorkspace,
+	removeWorkspace,
+	syncWorkspaces,
+	updateWorkspace,
+} from "../src/index.ts";
+
+const exec = promisify(execFile);
+const sandbox = resolve("tests.local");
+// Test subprocesses must not mix the developer's global Git settings with fixture settings.
+process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+process.env.GIT_CONFIG_NOSYSTEM = "1";
+
+async function run(path: string, args: string[]): Promise<string> {
+	const { stdout } = await exec(
+		"git",
+		[
+			"-c",
+			"user.name=Clonelane Test",
+			"-c",
+			"user.email=test@clonelane.invalid",
+			"-c",
+			"commit.gpgsign=false",
+			"-c",
+			`core.hooksPath=${hooksPath()}`,
+			...args,
+		],
+		{
+			cwd: path,
+			encoding: "utf8",
+			windowsHide: true,
+			env: {
+				...process.env,
+				GIT_CONFIG_GLOBAL: "/dev/null",
+				GIT_CONFIG_NOSYSTEM: "1",
+				GIT_AUTHOR_NAME: "Clonelane Test",
+				GIT_AUTHOR_EMAIL: "test@clonelane.invalid",
+				GIT_COMMITTER_NAME: "Clonelane Test",
+				GIT_COMMITTER_EMAIL: "test@clonelane.invalid",
+			},
+		},
+	);
+	return stdout.trim();
+}
+
+async function fixture(t: TestContext) {
+	await mkdir(sandbox, { recursive: true });
+	const root = await mkdtemp(join(sandbox, "case-"));
+	t.after(async () => {
+		const target = resolve(root);
+		assert.ok(
+			target.startsWith(sandbox + sep),
+			"cleanup stays inside test sandbox",
+		);
+		await rm(target, {
+			recursive: true,
+			force: true,
+			maxRetries: 5,
+			retryDelay: 100,
+		});
+	});
+	const remote = join(root, "remote.git");
+	const seed = join(root, "seed");
+	const first = join(root, "first clone");
+	const second = join(root, "second");
+	await run(root, ["init", "--bare", "--initial-branch=master", remote]);
+	await run(root, ["clone", remote, seed]);
+	await writeFile(join(seed, ".gitignore"), ".env\n.env.*\n");
+	await writeFile(join(seed, "hello.txt"), "initial\n");
+	await run(seed, ["add", "."]);
+	await run(seed, ["commit", "-m", "initial"]);
+	await run(seed, ["push", "origin", "master"]);
+	await run(root, ["clone", remote, first]);
+	await run(root, ["clone", remote, second]);
+	for (const path of [first, second]) {
+		await run(path, ["config", "user.name", "Clonelane Test"]);
+		await run(path, ["config", "user.email", "test@clonelane.invalid"]);
+	}
+	const a = await registerWorkspace({
+		name: "first",
+		path: first,
+		group: "demo",
+	});
+	const b = await registerWorkspace({
+		name: "second",
+		path: second,
+		group: "demo",
+	});
+	async function publish(file = "new.txt", content = "remote update\n") {
+		await writeFile(join(seed, file), content);
+		await run(seed, ["add", file]);
+		await run(seed, ["commit", "-m", "advance master"]);
+		await run(seed, ["push", "origin", "master"]);
+		return run(seed, ["rev-parse", "HEAD"]);
+	}
+	return { root, remote, seed, first, second, a, b, publish };
+}
+
+describe("isolated Git and env integration", { concurrency: 4 }, () => {
+	test("remote identity unifies SSH/HTTPS and never retains credentials", () => {
+		assert.equal(
+			repositoryIdentity(
+				"https://alice:secret@github.com/Team/Repo.git?token=secret",
+				".",
+			),
+			"github.com/Team/Repo",
+		);
+		assert.equal(
+			repositoryIdentity("git@github.com:Team/Repo.git", "."),
+			"github.com/Team/Repo",
+		);
+		// Remote-helper form: identify the wrapped address and drop its credentials.
+		assert.equal(
+			repositoryIdentity(
+				"persistent-https::https://user:SYNTHETIC_TOKEN@github.com/Team/Repo.git",
+				".",
+			),
+			"github.com/Team/Repo",
+		);
+	});
+
+	test("hooks never run: neither the repository's own nor one planted at a Windows drive root", async (t) => {
+		const f = await fixture(t);
+		const marker = join(f.root, "hook-ran");
+		const hook = `#!${process.execPath.replace(/\\/g, "/")}\nrequire("fs").writeFileSync(${JSON.stringify(marker)}, "hit")\n`;
+		await writeFile(
+			join(f.first, ".git", "hooks", "reference-transaction"),
+			hook,
+			{ mode: 0o755 },
+		);
+		await git(f.first, ["update-ref", "refs/heads/probe", "HEAD"]);
+		assert.equal(existsSync(marker), false, "repository hook ran");
+		if (process.platform !== "win32") return;
+		// "/dev/null/<hook>" resolves under the cwd's drive root on Windows; a virtual drive
+		// stands in for C:\ so nothing is written outside the sandbox.
+		const drive = ["R:", "Q:", "P:", "O:", "N:"].find(
+			(d) => !existsSync(`${d}\\`),
+		);
+		if (!drive) return t.skip("no free drive letter for subst");
+		const base = join(f.root, "drive");
+		await mkdir(base);
+		await exec("subst", [drive, base]);
+		t.after(() => exec("subst", [drive, "/d"]));
+		await run(`${drive}\\`, ["clone", f.remote, "clone"]);
+		// Planted only now, so the one Git call under test is the one that could run it.
+		await mkdir(join(base, "dev", "null"), { recursive: true });
+		await writeFile(join(base, "dev", "null", "reference-transaction"), hook);
+		await git(`${drive}\\clone`, ["update-ref", "refs/heads/probe", "HEAD"]);
+		assert.equal(existsSync(marker), false, "drive-root hook ran");
+	});
+
+	test("a git.exe in the working tree is never run in place of Git", {
+		skip: process.platform !== "win32",
+	}, async (t) => {
+		const f = await fixture(t);
+		await copyFile(
+			"C:\\Windows\\System32\\whoami.exe",
+			join(f.first, "git.exe"),
+		);
+		assert.match(await git(f.first, ["--version"]), /^git version/);
+	});
+
+	test("registry groups independent clones and rejects duplicate or mismatched entries", async (t) => {
+		const f = await fixture(t);
+		const config = join(f.root, "registry.json");
+		await addWorkspace(config, { name: "a", path: f.first, group: "demo" });
+		await addWorkspace(config, { name: "b", path: f.second, group: "demo" });
+		assert.equal((await readRegistry(config)).workspaces.length, 2);
+		await assert.rejects(
+			addWorkspace(config, { name: "a", path: f.seed, group: "demo" }),
+			{ code: "DUPLICATE" },
+		);
+		await assert.rejects(
+			addWorkspace(config, {
+				name: "c",
+				path: f.seed,
+				group: "demo",
+				base: "main",
+			}),
+			{ code: "GROUP_MISMATCH" },
+		);
+	});
+
+	test("registry edits rename, regroup and forget workspaces without touching folders", async (t) => {
+		const f = await fixture(t);
+		const config = join(f.root, "registry.json");
+		await addWorkspace(config, { name: "a", path: f.first, group: "Demo" });
+		await addWorkspace(config, { name: "b", path: f.second, group: "other" });
+		await assert.rejects(
+			addWorkspace(config, { name: "c", path: f.seed, group: "demo" }),
+			(error: Error) =>
+				/"Demo"/.test(error.message) &&
+				"code" in error &&
+				error.code === "GROUP_CASE",
+		);
+		await assert.rejects(
+			planEnv(f.a, { ...f.b, group: "other" }, { file: ".env", keys: "all" }),
+			{
+				code: "ENV_GROUP",
+			},
+		);
+		const moved = await updateWorkspace(config, "b", {
+			name: "b2",
+			group: "Demo",
+		});
+		assert.deepEqual([moved.name, moved.group], ["b2", "Demo"]);
+		await assert.rejects(updateWorkspace(config, "b2", { name: "a" }), {
+			code: "DUPLICATE",
+		});
+		await assert.rejects(updateWorkspace(config, "missing", { group: "x" }), {
+			code: "WORKSPACE",
+		});
+		await removeWorkspace(config, "a");
+		assert.deepEqual(
+			(await readRegistry(config)).workspaces.map((item) => [
+				item.name,
+				item.group,
+			]),
+			[["b2", "Demo"]],
+		);
+		assert.equal(
+			await run(f.first, ["rev-parse", "--is-inside-work-tree"]),
+			"true",
+		);
+	});
+
+	test("a partly pushed branch is never rebased; a file named HEAD does not break inspection", async (t) => {
+		const f = await fixture(t);
+		await run(f.first, ["switch", "-c", "feat"]);
+		for (const name of ["b", "c"]) {
+			await writeFile(join(f.first, `${name}.txt`), `${name}\n`);
+			await run(f.first, ["add", "."]);
+			await run(f.first, ["commit", "-m", name]);
+			// Push b without an upstream; c stays local, so the tip is unpublished.
+			if (name === "b") await run(f.first, ["push", "origin", "feat"]);
+		}
+		await writeFile(join(f.first, ".git", "info", "exclude"), "HEAD\n");
+		await writeFile(join(f.first, "HEAD"), "not a revision\n");
+		await f.publish();
+		await fetchWorkspaces([f.a]);
+		assert.equal((await inspectWorkspace(f.a)).subject, "c");
+		const [plan] = await syncWorkspaces([f.a], { dryRun: true, rebase: true });
+		assert.equal(plan?.action, "skip");
+		assert.equal(plan?.reason, "published-or-merge-branch");
+	});
+
+	test("fetch handles two bases of one clone under its single lock", async (t) => {
+		const f = await fixture(t);
+		await run(f.seed, ["push", "origin", "master:develop"]);
+		const path = join(f.root, "dev");
+		await run(f.first, ["worktree", "add", "--detach", path]);
+		const dev = await registerWorkspace({
+			name: "dev",
+			path,
+			group: "dev",
+			base: "develop",
+		});
+		await fetchWorkspaces([f.a, dev]);
+		assert.ok(await run(f.first, ["rev-parse", "refs/remotes/origin/develop"]));
+	});
+
+	test("sync never overwrites an ignored .env that the incoming base adds", async (t) => {
+		const f = await fixture(t);
+		await writeFile(join(f.first, ".env"), "TOKEN=local-synthetic\n");
+		await writeFile(join(f.seed, ".env"), "TOKEN=remote-synthetic\n");
+		await run(f.seed, ["add", "-f", ".env"]);
+		await run(f.seed, ["commit", "-m", "commit env by mistake"]);
+		await run(f.seed, ["push", "origin", "master"]);
+		await fetchWorkspaces([f.a]);
+		const [preview] = await syncWorkspaces([f.a], { dryRun: true });
+		assert.equal(preview?.reason, "local-files-in-the-way");
+		const [result] = await syncWorkspaces([f.a]);
+		assert.equal(result?.result, "skipped");
+		assert.equal(
+			await readFile(join(f.first, ".env"), "utf8"),
+			"TOKEN=local-synthetic\n",
+		);
+	});
+
+	test("env refuses a target whose .env differs from a tracked or present file only by case", async (t) => {
+		const f = await fixture(t);
+		await writeFile(join(f.seed, ".ENV"), "A=1\n");
+		await run(f.seed, ["add", "-f", ".ENV"]);
+		await run(f.seed, ["commit", "-m", "tracked upper-case env"]);
+		await run(f.seed, ["push", "origin", "master"]);
+		await run(f.second, ["pull", "-q", "--ff-only"]);
+		await writeFile(join(f.first, ".env"), "A=synthetic\n");
+		const options = { file: ".env", keys: ["A"], overwrite: true };
+		await assert.rejects(applyEnv(f.a, f.b, options), { code: "ENV_CASE" });
+		// Tracked but absent on disk: the case-insensitive pathspec still catches it.
+		await rm(join(f.second, ".ENV"));
+		await writeFile(join(f.second, ".env"), "A=2\n");
+		await assert.rejects(applyEnv(f.a, f.b, options), { code: "TRACKED_ENV" });
+		assert.equal(await run(f.second, ["show", "HEAD:.ENV"]), "A=1");
+	});
+
+	test("a base being rebased in another worktree is not moved", async (t) => {
+		const f = await fixture(t);
+		await run(f.first, ["switch", "-c", "feature"]);
+		await run(f.first, ["worktree", "add", "--detach", join(f.root, "other")]);
+		const { commonDir } = await inspectWorkspace(f.a);
+		const [id = ""] = await readdir(join(commonDir, "worktrees"));
+		await mkdir(join(commonDir, "worktrees", id, "rebase-merge"));
+		await writeFile(
+			join(commonDir, "worktrees", id, "rebase-merge", "head-name"),
+			"refs/heads/master\n",
+		);
+		await f.publish();
+		await fetchWorkspaces([f.a]);
+		const [plan] = await syncWorkspaces([f.a], { dryRun: true });
+		assert.equal(
+			plan?.baseUpdate?.reason,
+			"base-checked-out-in-another-worktree",
+		);
+	});
+
+	test("worktrees share common metadata but retain independent current branches", async (t) => {
+		const f = await fixture(t);
+		const path = join(f.root, "linked");
+		await run(f.first, ["worktree", "add", "-b", "feature", path]);
+		const linked = await registerWorkspace({
+			name: "linked",
+			path,
+			group: "demo",
+		});
+		const first = await inspectWorkspace(f.a);
+		const second = await inspectWorkspace(linked);
+		assert.equal(first.commonDir, second.commonDir);
+		assert.equal(second.branch, "feature");
+		assert.ok(second.branches.some((branch) => branch.name === "master"));
+	});
+
+	test("status carries the HEAD subject; the graph lists branch commits and connector lines", async (t) => {
+		const f = await fixture(t);
+		await run(f.first, ["switch", "-c", "feature"]);
+		await writeFile(join(f.first, "feature.txt"), "x\n");
+		await run(f.first, ["add", "."]);
+		await run(f.first, ["commit", "-m", "feature work"]);
+		await run(f.first, ["switch", "master"]);
+		await writeFile(join(f.first, "local.txt"), "y\n");
+		await run(f.first, ["add", "."]);
+		await run(f.first, ["commit", "-m", "local master"]);
+		assert.equal((await inspectWorkspace(f.a)).subject, "local master");
+		const commits = await historyGraph(f.a);
+		assert.deepEqual(commits.map((commit) => commit.subject).sort(), [
+			"feature work",
+			"initial",
+			"local master",
+		]);
+		const initial = commits.find((commit) => commit.subject === "initial");
+		const local = commits.find((commit) => commit.subject === "local master");
+		assert.deepEqual(local?.parents, [initial?.hash]);
+		assert.deepEqual(local?.refs, [{ name: "master", kind: "head" }]);
+		// origin/HEAD is an alias and is left out.
+		assert.deepEqual(initial?.refs, [
+			{ name: "origin/master", kind: "remote" },
+		]);
+		assert.equal(initial?.author, "Clonelane Test");
+		assert.ok((initial?.time ?? 0) > 0);
+	});
+
+	test("dry run does not fetch or create recovery refs; explicit fetch then fast-forward updates master", async (t) => {
+		const f = await fixture(t);
+		const before = await run(f.first, ["rev-parse", "HEAD"]);
+		const expected = await f.publish();
+		const cached = await syncWorkspaces([f.a], { dryRun: true });
+		assert.equal(cached[0]?.action, "up-to-date");
+		assert.equal(
+			await run(f.first, ["rev-parse", "refs/remotes/origin/master"]),
+			before,
+		);
+		await fetchWorkspaces([f.a, f.b]);
+		const plan = await syncWorkspaces([f.a], { dryRun: true });
+		assert.equal(plan[0]?.action, "fast-forward");
+		assert.equal(await run(f.first, ["for-each-ref", "refs/clonelane/"]), "");
+		const result = await syncWorkspaces([f.a, f.b]);
+		assert.ok(result.every((item) => item.result === "updated"));
+		assert.equal(await run(f.first, ["rev-parse", "HEAD"]), expected);
+		assert.equal(
+			await run(f.first, ["rev-parse", result[0]?.backup ?? ""]),
+			before,
+		);
+	});
+
+	test("dirty directories and divergent master preserve local work", async (t) => {
+		const f = await fixture(t);
+		await f.publish();
+		await fetchWorkspaces([f.a, f.b]);
+		await writeFile(join(f.first, "uncommitted.txt"), "keep me");
+		await writeFile(join(f.second, "local.txt"), "local commit");
+		await run(f.second, ["add", "local.txt"]);
+		await run(f.second, ["commit", "-m", "local"]);
+		const before = await run(f.second, ["rev-parse", "HEAD"]);
+		const results = await syncWorkspaces([f.a, f.b]);
+		assert.equal(results[0]?.reason, "uncommitted-changes");
+		assert.equal(results[1]?.reason, "base-has-local-commits");
+		assert.equal(await run(f.second, ["rev-parse", "HEAD"]), before);
+		assert.equal(
+			await readFile(join(f.first, "uncommitted.txt"), "utf8"),
+			"keep me",
+		);
+	});
+
+	test("explicit rebase keeps feature branch and puts its commit onto current master", async (t) => {
+		const f = await fixture(t);
+		await run(f.first, ["switch", "-c", "feature"]);
+		await writeFile(join(f.first, "feature.txt"), "feature\n");
+		await run(f.first, ["add", "feature.txt"]);
+		await run(f.first, ["commit", "-m", "feature"]);
+		const expected = await f.publish();
+		await fetchWorkspaces([f.a]);
+		assert.equal(
+			(await syncWorkspaces([f.a]))[0]?.reason,
+			"rebase-not-enabled",
+		);
+		const result = await syncWorkspaces([f.a], { rebase: true });
+		assert.equal(result[0]?.result, "updated");
+		assert.equal(await run(f.first, ["branch", "--show-current"]), "feature");
+		assert.equal(await run(f.first, ["rev-parse", "HEAD^"]), expected);
+		assert.equal(await run(f.first, ["rev-parse", "master"]), expected);
+		assert.equal(
+			await readFile(join(f.first, "feature.txt"), "utf8"),
+			"feature\n",
+		);
+	});
+
+	test("published feature branches are never automatically rewritten", async (t) => {
+		const f = await fixture(t);
+		await run(f.first, ["switch", "-c", "shared"]);
+		await writeFile(join(f.first, "feature.txt"), "shared");
+		await run(f.first, ["add", "."]);
+		await run(f.first, ["commit", "-m", "shared"]);
+		await run(f.first, ["push", "-u", "origin", "shared"]);
+		const before = await run(f.first, ["rev-parse", "HEAD"]);
+		await f.publish();
+		await fetchWorkspaces([f.a]);
+		assert.equal(
+			(await syncWorkspaces([f.a], { dryRun: true, rebase: true }))[0]?.reason,
+			"published-or-merge-branch",
+		);
+		assert.equal(
+			(await syncWorkspaces([f.a], { rebase: true }))[0]?.reason,
+			"published-or-merge-branch",
+		);
+		assert.equal(await run(f.first, ["rev-parse", "HEAD"]), before);
+	});
+
+	test("conflicting rebase restores original branch and clean checkout", async (t) => {
+		const f = await fixture(t);
+		await run(f.first, ["switch", "-c", "feature"]);
+		await writeFile(join(f.first, "hello.txt"), "local conflict\n");
+		await run(f.first, ["add", "."]);
+		await run(f.first, ["commit", "-m", "conflict"]);
+		const before = await run(f.first, ["rev-parse", "HEAD"]);
+		await f.publish("hello.txt", "remote conflict\n");
+		await fetchWorkspaces([f.a]);
+		const result = await syncWorkspaces([f.a], { rebase: true });
+		assert.equal(result[0]?.error, "rebase-failed-restored");
+		assert.equal(await run(f.first, ["rev-parse", "HEAD"]), before);
+		assert.equal(await run(f.first, ["status", "--porcelain"]), "");
+		assert.equal((await inspectWorkspace(f.a)).operation, false);
+	});
+
+	test("existing Clonelane lock blocks mutations", async (t) => {
+		const f = await fixture(t);
+		const state = await inspectWorkspace(f.a);
+		await writeFile(
+			join(state.commonDir, "clonelane.lock"),
+			"another instance",
+		);
+		assert.equal((await syncWorkspaces([f.a]))[0]?.error, "LOCKED");
+	});
+
+	test("changed remote identity blocks operations without exposing its credentials", async (t) => {
+		const f = await fixture(t);
+		await run(f.first, [
+			"remote",
+			"set-url",
+			"origin",
+			"https://person:do-not-print@example.invalid/other.git",
+		]);
+		await assert.rejects(inspectWorkspace(f.a), (error) => {
+			assert.ok(error instanceof Error);
+			assert.ok(!error.message.includes("do-not-print"));
+			return (error as { code?: string }).code === "IDENTITY_CHANGED";
+		});
+	});
+
+	test("env plan is value-free; apply preserves target-only keys and multiline strings", async (t) => {
+		const f = await fixture(t);
+		const secret = "fixture-secret-never-print";
+		await writeFile(
+			join(f.first, ".env"),
+			`API_TOKEN='${secret}'\nMULTI='line one\nline two'\nNOT_SHARED=source\n`,
+		);
+		await writeFile(join(f.second, ".env"), "PORT=6004\nNOT_SHARED=local\n");
+		const options = { file: ".env", keys: ["API_TOKEN", "MULTI"] };
+		const plan = await planEnv(f.a, f.b, options);
+		assert.ok(!JSON.stringify(plan).includes(secret));
+		assert.deepEqual(
+			plan.changes.map((change) => change.state),
+			["add", "add"],
+		);
+		await applyEnv(f.a, f.b, options);
+		const actual = parseEnv(await readFile(join(f.second, ".env"), "utf8"));
+		assert.equal(actual.API_TOKEN, secret);
+		assert.equal(actual.MULTI, "line one\nline two");
+		assert.equal(actual.PORT, "6004");
+		assert.equal(actual.NOT_SHARED, "local");
+	});
+
+	test("env all-keys copies every source key, keeps target-only keys and still gates conflicts", async (t) => {
+		const f = await fixture(t);
+		await writeFile(
+			join(f.first, ".env"),
+			"TOKEN=new\nVITE_URL=https://example.invalid\nEXTRA=1\n",
+		);
+		await writeFile(join(f.second, ".env"), "TOKEN=old\nPORT=6004\n");
+		const options = { file: ".env", keys: "all" as const };
+		const plan = await planEnv(f.a, f.b, options);
+		assert.deepEqual(
+			plan.changes.map((change) => [change.key, change.state]),
+			[
+				["EXTRA", "add"],
+				["TOKEN", "conflict"],
+				["VITE_URL", "add"],
+			],
+		);
+		await assert.rejects(applyEnv(f.a, f.b, options), { code: "ENV_CONFLICT" });
+		await applyEnv(f.a, f.b, { ...options, overwrite: true });
+		const actual = parseEnv(await readFile(join(f.second, ".env"), "utf8"));
+		assert.deepEqual(
+			{ ...actual },
+			{
+				EXTRA: "1",
+				PORT: "6004",
+				TOKEN: "new",
+				VITE_URL: "https://example.invalid",
+			},
+		);
+	});
+
+	test("env conflicts require explicit overwrite and preview never writes", async (t) => {
+		const f = await fixture(t);
+		await writeFile(join(f.first, ".env"), "TOKEN=new\n");
+		const original = "# important\nTOKEN=old\n";
+		await writeFile(join(f.second, ".env"), original);
+		const options = { file: ".env", keys: ["TOKEN"] };
+		assert.equal(
+			(await planEnv(f.a, f.b, options)).changes[0]?.state,
+			"conflict",
+		);
+		assert.equal(await readFile(join(f.second, ".env"), "utf8"), original);
+		await assert.rejects(applyEnv(f.a, f.b, options), { code: "ENV_CONFLICT" });
+		assert.equal(await readFile(join(f.second, ".env"), "utf8"), original);
+		await applyEnv(f.a, f.b, { ...options, overwrite: true });
+		assert.equal(
+			parseEnv(await readFile(join(f.second, ".env"), "utf8")).TOKEN,
+			"new",
+		);
+	});
+
+	test("env rejects tracked files, missing keys, path traversal and public variables without acknowledgement", async (t) => {
+		const f = await fixture(t);
+		await writeFile(
+			join(f.first, ".env"),
+			"TOKEN=secret\nVITE_URL=https://example.invalid\n",
+		);
+		await assert.rejects(
+			planEnv(f.a, f.b, { file: "../.env", keys: ["TOKEN"] }),
+			{ code: "ENV_FILE" },
+		);
+		await assert.rejects(
+			planEnv(f.a, f.b, { file: ".env", keys: ["MISSING"] }),
+			{
+				code: "ENV_KEY_MISSING",
+			},
+		);
+		await assert.rejects(
+			planEnv(f.a, f.b, { file: ".env", keys: ["VITE_URL"] }),
+			{ code: "PUBLIC_VARIABLE" },
+		);
+		await planEnv(f.a, f.b, {
+			file: ".env",
+			keys: ["VITE_URL"],
+			publicKeys: ["VITE_URL"],
+		});
+		await run(f.first, ["add", "--force", ".env"]);
+		await assert.rejects(planEnv(f.a, f.b, { file: ".env", keys: ["TOKEN"] }), {
+			code: "TRACKED_ENV",
+		});
+	});
+
+	test("env rejects symlink targets and leaves external file untouched", async (t) => {
+		const f = await fixture(t);
+		await writeFile(join(f.first, ".env"), "TOKEN=secret\n");
+		const outside = join(f.root, "outside.env");
+		await writeFile(outside, "TOKEN=outside\n");
+		try {
+			await symlink(outside, join(f.second, ".env"), "file");
+		} catch (error) {
+			if (
+				["EPERM", "EACCES"].includes(
+					(error as NodeJS.ErrnoException).code ?? "",
+				)
+			) {
+				t.skip("OS does not permit file symlinks");
+				return;
+			}
+			throw error;
+		}
+		await assert.rejects(
+			applyEnv(f.a, f.b, { file: ".env", keys: ["TOKEN"], overwrite: true }),
+			{ code: "UNSAFE_FILE" },
+		);
+		assert.equal(await readFile(outside, "utf8"), "TOKEN=outside\n");
+	});
+
+	test("CLI rejects env apply --dry-run rather than silently writing", async (t) => {
+		const f = await fixture(t);
+		try {
+			await exec(
+				process.execPath,
+				[
+					"src/cli.ts",
+					"env",
+					"apply",
+					"--dry-run",
+					"--config",
+					join(f.root, "absent.json"),
+				],
+				{ cwd: resolve("."), encoding: "utf8" },
+			);
+			assert.fail("CLI should reject the unsupported flag");
+		} catch (error) {
+			assert.match((error as { stderr: string }).stderr, /USAGE/);
+		}
+	});
+
+	test("a single non-origin remote is used by default; a missing remote is named", async (t) => {
+		const { first } = await fixture(t);
+		await run(first, ["remote", "rename", "origin", "upstream"]);
+		const workspace = await registerWorkspace({
+			name: "renamed",
+			path: first,
+			group: "demo",
+		});
+		assert.equal(workspace.remote, "upstream");
+		await assert.rejects(
+			registerWorkspace({
+				name: "renamed",
+				path: first,
+				group: "demo",
+				remote: "origin",
+			}),
+			{
+				code: "REMOTE_MISSING",
+				message: 'Remote "origin" does not exist. Available remotes: upstream.',
+			},
+		);
+	});
+
+	test("registered workspace path is canonical", async (t) => {
+		const f = await fixture(t);
+		assert.equal(f.a.path, await realpath(f.first));
+	});
+
+	test("a linked worktree cannot move a base checked out by its owner", async (t) => {
+		const f = await fixture(t);
+		const path = join(f.root, "linked");
+		await run(f.first, ["worktree", "add", "-b", "feature", path]);
+		const linked = await registerWorkspace({
+			name: "linked",
+			path,
+			group: "demo",
+		});
+		const original = await run(f.first, ["rev-parse", "HEAD"]);
+		await f.publish();
+		await fetchWorkspaces([linked]);
+		const result = await syncWorkspaces([linked]);
+		assert.equal(
+			result[0]?.baseUpdate?.reason,
+			"base-checked-out-in-another-worktree",
+		);
+		assert.equal(await run(f.first, ["rev-parse", "HEAD"]), original);
+	});
+
+	test("env rejects hard-linked target files", async (t) => {
+		const f = await fixture(t);
+		await writeFile(join(f.first, ".env"), "TOKEN=source\n");
+		const outside = join(f.root, "external.env");
+		await writeFile(outside, "TOKEN=outside\n");
+		await link(outside, join(f.second, ".env"));
+		await assert.rejects(
+			applyEnv(f.a, f.b, { file: ".env", keys: ["TOKEN"], overwrite: true }),
+			{ code: "UNSAFE_FILE" },
+		);
+		assert.equal(await readFile(outside, "utf8"), "TOKEN=outside\n");
+	});
+});
