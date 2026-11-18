@@ -19,4 +19,5 @@ First public release.
 - Git always runs from an argument array with hooks, fsmonitor and automatic maintenance disabled. On Windows, hooks are disabled with a private empty directory instead of `/dev/null`, which would resolve under the drive root.
 - Sync skips a workspace when the incoming base adds a path that already exists locally, so an ignored `.env` is never overwritten.
 - `.env` files must be untracked and ignored; a tracked case variant such as `.ENV` is refused.
+- Git is launched by absolute path from absolute `PATH` entries only, so a `git.exe` in a working tree never runs in place of Git, even when `PATH` contains an empty or relative entry.
 - Credentials in remote URLs, including remote-helper URLs (`<transport>::<address>`), are never stored or printed.

@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { accessSync, constants, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
@@ -23,7 +23,38 @@ export function hooksPath(): string {
 	return noHooks;
 }
 
+// Git is launched by absolute path. A bare "git" is looked up through PATH, and an empty,
+// "." or other relative PATH entry means the current directory: the working tree, whose
+// files (a committed git.exe) come from the repository. Only fully absolute entries count.
+export function findGit(pathEnv = process.env.PATH ?? ""): string {
+	const windows = process.platform === "win32";
+	const absolute = windows ? /^(?:[A-Za-z]:[\\/]|\\\\)/ : /^\//;
+	for (const raw of pathEnv.split(delimiter)) {
+		const dir = raw.replace(/^"(.*)"$/, "$1");
+		if (!absolute.test(dir)) continue;
+		for (const name of windows ? ["git.com", "git.exe"] : ["git"]) {
+			const candidate = join(dir, name);
+			try {
+				if (!statSync(candidate).isFile()) continue;
+				if (!windows) accessSync(candidate, constants.X_OK);
+				return candidate;
+			} catch {}
+		}
+	}
+	fail(
+		"GIT_MISSING",
+		"Git was not found on PATH. Install Git and add it to PATH.",
+	);
+}
+
+let gitPath: string | undefined;
+const gitExecutable = () => {
+	gitPath ??= findGit();
+	return gitPath;
+};
+
 export async function git(path: string, args: string[]): Promise<string> {
+	const executable = gitExecutable();
 	const env = { ...process.env };
 	for (const key of [
 		"GIT_DIR",
@@ -36,7 +67,7 @@ export async function git(path: string, args: string[]): Promise<string> {
 		delete env[key];
 	try {
 		const { stdout } = await exec(
-			"git",
+			executable,
 			[
 				"--no-optional-locks",
 				"-c",

@@ -13,10 +13,10 @@ import {
 	symlink,
 	writeFile,
 } from "node:fs/promises";
-import { join, resolve, sep } from "node:path";
+import { delimiter, dirname, join, relative, resolve, sep } from "node:path";
 import { describe, type TestContext, test } from "node:test";
 import { parseEnv, promisify } from "node:util";
-import { git, hooksPath, repositoryIdentity } from "../src/git.ts";
+import { findGit, git, hooksPath, repositoryIdentity } from "../src/git.ts";
 import {
 	addWorkspace,
 	applyEnv,
@@ -173,6 +173,24 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		await writeFile(join(base, "dev", "null", "reference-transaction"), hook);
 		await git(`${drive}\\clone`, ["update-ref", "refs/heads/probe", "HEAD"]);
 		assert.equal(existsSync(marker), false, "drive-root hook ran");
+	});
+
+	test("Git is resolved from absolute PATH entries only", async (t) => {
+		const f = await fixture(t);
+		const real = findGit();
+		await writeFile(
+			join(f.root, process.platform === "win32" ? "git.exe" : "git"),
+			"#!/bin/sh\nexit 0\n",
+			{ mode: 0o755 },
+		);
+		// Empty, "." and relative entries all point into the current directory tree.
+		const path = ["", ".", relative(process.cwd(), f.root), dirname(real)].join(
+			delimiter,
+		);
+		assert.equal(findGit(path), real);
+		assert.throws(() => findGit(relative(process.cwd(), f.root)), {
+			code: "GIT_MISSING",
+		});
 	});
 
 	test("a git.exe in the working tree is never run in place of Git", {
