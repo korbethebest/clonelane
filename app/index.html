@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta
+			http-equiv="Content-Security-Policy"
+			content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'"
+		/>
+		<title>Clonelane</title>
+		<meta
+			name="description"
+			content="See every clone and worktree of a repository, bring base branches forward safely and share selected .env keys."
+		/>
+		<link rel="stylesheet" href="style.css" />
+		<script type="module" src="renderer.js"></script>
+	</head>
+	<body>
+		<header>
+			<h1 class="brand">Clonelane</h1>
+			<label id="group-picker" class="inline" hidden>
+				Group
+				<select id="group"></select>
+			</label>
+			<button id="refresh" type="button" title="Re-read local Git state (no network)">
+				Refresh
+			</button>
+			<button id="fetch" type="button" title="Fetch each base branch from its remote">
+				Fetch
+			</button>
+		</header>
+
+		<fieldset id="ui">
+			<div class="tabs" role="tablist" aria-label="Sections">
+				<button
+					id="tab-workspaces"
+					type="button"
+					role="tab"
+					data-tab="workspaces"
+					aria-controls="workspaces"
+					aria-selected="true"
+				>
+					Workspaces
+				</button>
+				<button
+					id="tab-sync"
+					type="button"
+					role="tab"
+					data-tab="sync"
+					aria-controls="sync"
+					aria-selected="false"
+					tabindex="-1"
+				>
+					Sync
+				</button>
+				<button
+					id="tab-env"
+					type="button"
+					role="tab"
+					data-tab="env"
+					aria-controls="env"
+					aria-selected="false"
+					tabindex="-1"
+				>
+					Environment
+				</button>
+			</div>
+
+			<section id="workspaces" role="tabpanel" aria-labelledby="tab-workspaces">
+				<div id="workspace-list"></div>
+
+				<details id="register-panel">
+					<summary>Add a workspace</summary>
+					<form id="register" class="grid">
+						<label class="wide">
+							Folder
+							<span class="row">
+								<input name="path" required placeholder="Paste a path or browse" />
+								<button id="browse" type="button">Browse…</button>
+							</span>
+						</label>
+						<label>Name <input name="name" required /></label>
+						<label>Group <input name="group" required list="group-options" /></label>
+						<label>Base branch <input name="base" placeholder="master" /></label>
+						<label>Remote <input name="remote" placeholder="origin" /></label>
+						<p class="hint wide">
+							A group is one repository: put every clone and worktree of it in the same group. Sync
+							and .env sharing work within a group.
+						</p>
+						<div class="actions"><button type="submit" class="primary">Add</button></div>
+					</form>
+					<datalist id="group-options"></datalist>
+					<p id="register-error" class="alert" role="alert" hidden></p>
+				</details>
+			</section>
+
+			<section id="sync" role="tabpanel" aria-labelledby="tab-sync" hidden>
+				<div class="toolbar">
+					<button id="sync-preview" type="button">Preview</button>
+					<label class="inline">
+						<input id="rebase" type="checkbox" />
+						Also rebase current feature branches (unpublished only)
+					</label>
+				</div>
+				<p id="sync-error" class="alert" role="alert" hidden></p>
+				<div id="sync-result"></div>
+				<div class="commit">
+					<button
+						id="sync-apply"
+						type="button"
+						class="primary"
+						disabled
+						aria-describedby="sync-reason"
+					>
+						Apply
+					</button>
+					<span id="sync-reason" class="reason"></span>
+				</div>
+				<p class="hint">
+					Apply fetches first and backs up every branch it moves. It never pushes or stashes.
+				</p>
+			</section>
+
+			<section id="env" role="tabpanel" aria-labelledby="tab-env" hidden>
+				<form id="env-form" class="grid">
+					<label>From <select name="source"></select></label>
+					<label>To (same group) <select name="target"></select></label>
+					<p id="env-peers" class="notice wide" role="status" hidden></p>
+					<fieldset class="scope wide">
+						<legend>Keys</legend>
+						<label class="inline">
+							<input type="radio" name="scope" value="all" checked />
+							All keys in the source file
+						</label>
+						<label class="inline">
+							<input type="radio" name="scope" value="selected" />
+							Only these keys
+						</label>
+						<input
+							name="keys"
+							required
+							disabled
+							hidden
+							aria-label="Keys to copy"
+							placeholder="API_URL, API_TOKEN"
+						/>
+					</fieldset>
+					<details class="more wide">
+						<summary>More options</summary>
+						<div class="grid">
+							<label>File <input name="file" placeholder=".env" /></label>
+							<label>
+								Browser-exposed keys (only with selected keys)
+								<input name="publicKeys" disabled placeholder="VITE_API_URL" />
+							</label>
+						</div>
+					</details>
+					<div class="actions"><button id="env-plan" type="submit">Preview</button></div>
+				</form>
+				<p id="env-error" class="alert" role="alert" hidden></p>
+				<div id="env-result"></div>
+				<div class="commit">
+					<label id="overwrite-row" class="inline" hidden>
+						<input id="overwrite" type="checkbox" />
+						Replace conflicting values
+					</label>
+					<button
+						id="env-apply"
+						type="button"
+						class="primary"
+						disabled
+						aria-describedby="env-reason"
+					>
+						Apply
+					</button>
+					<span id="env-reason" class="reason"></span>
+				</div>
+				<p class="hint">
+					Keys are copied only between workspaces in the same group. Only key names are shown, never
+					values. Keys that exist only in the target are kept.
+					Applying rewrites the target file without its comments.
+				</p>
+			</section>
+		</fieldset>
+
+		<footer>
+			<p id="message" role="status"></p>
+			<p id="footer-alert" class="alert" role="alert" hidden></p>
+		</footer>
+	</body>
+</html>

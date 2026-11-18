@@ -1,0 +1,860 @@
+:root {
+	color-scheme: light dark;
+	--bg: #f6f7f5;
+	--panel: #ffffff;
+	--text: #1d2421;
+	--muted: #66706b;
+	--line: #dfe3e0;
+	--accent: #2f7d55;
+	--accent-text: #ffffff;
+	--ok: #2f7d55;
+	--warn: #8f5a00;
+	--bad: #b42318;
+	--mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+	/* Refs: local branches share the accent, remote branches are blue. */
+	--local: var(--accent);
+	--remote: #2563c9;
+	/* Graph lanes: distinct but muted, readable as text on the panel. */
+	--l0: #2f7d55;
+	--l1: #2563c9;
+	--l2: #b5520f;
+	--l3: #7a45c4;
+	--l4: #0e7490;
+	--l5: #b8336a;
+	--l6: #8a6a00;
+	--l7: #4f7a14;
+	/* 4px spacing scale */
+	--space-1: 4px;
+	--space-2: 8px;
+	--space-3: 12px;
+	--space-4: 16px;
+	--space-5: 20px;
+	--space-6: 24px;
+	font:
+		14px / 1.5 system-ui,
+		"Segoe UI",
+		sans-serif;
+	accent-color: var(--accent);
+	scrollbar-color: var(--line) transparent;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		--bg: #151917;
+		--panel: #1e2421;
+		--text: #e6ebe8;
+		--muted: #98a39d;
+		--line: #333b37;
+		--accent: #5cb98a;
+		--accent-text: #0f1512;
+		--ok: #5cb98a;
+		--warn: #e0a640;
+		--bad: #f07167;
+		--remote: #6f9ef0;
+		--l0: #5cb98a;
+		--l1: #6f9ef0;
+		--l2: #e8925a;
+		--l3: #b18cf0;
+		--l4: #4fbfd6;
+		--l5: #ee7fa8;
+		--l6: #d6b54a;
+		--l7: #9bcc5c;
+	}
+}
+
+* {
+	box-sizing: border-box;
+}
+
+[hidden] {
+	/* biome-ignore lint/complexity/noImportantStyles: component display rules (label.inline) must not resurrect elements hidden by state */
+	display: none !important;
+}
+
+::selection {
+	background: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+html,
+body {
+	overflow-x: clip;
+}
+
+body {
+	margin: 0;
+	background: var(--bg);
+	color: var(--text);
+	caret-color: var(--accent);
+	display: flex;
+	flex-direction: column;
+	min-height: 100vh;
+}
+
+code {
+	font-family: var(--mono);
+	font-size: 0.92em;
+}
+
+p,
+h1,
+h2 {
+	margin: 0;
+}
+
+h1,
+h2 {
+	text-wrap: balance;
+}
+
+header {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--space-2) var(--space-3);
+	padding: var(--space-3) var(--space-5);
+	background: var(--panel);
+	border-bottom: 1px solid var(--line);
+}
+
+.brand {
+	margin-right: auto;
+	font-size: 16px;
+}
+
+fieldset#ui {
+	border: 0;
+	margin: 0;
+	padding: 0 var(--space-5) var(--space-6);
+	flex: 1;
+	min-width: 0;
+}
+
+button,
+input,
+select {
+	font: inherit;
+	color: inherit;
+}
+
+button {
+	position: relative;
+	padding: var(--space-2) var(--space-4);
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	background: var(--panel);
+	cursor: pointer;
+}
+
+/* Stretch the hit target to 44px or more without growing the control. */
+button::after {
+	content: "";
+	position: absolute;
+	inset: calc(var(--space-1) * -1) 0;
+}
+
+button:hover:not(:disabled) {
+	border-color: color-mix(in srgb, var(--text) 30%, var(--line));
+}
+
+button:active:not(:disabled) {
+	background: color-mix(in srgb, var(--text) 6%, var(--panel));
+}
+
+button.primary {
+	background: var(--accent);
+	border-color: var(--accent);
+	color: var(--accent-text);
+}
+
+button.primary:hover:not(:disabled) {
+	background: color-mix(in srgb, var(--accent) 88%, var(--text));
+}
+
+button.primary:active:not(:disabled) {
+	background: color-mix(in srgb, var(--accent) 78%, var(--text));
+}
+
+button:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
+}
+
+/* A disabled primary reads as unavailable, not as a faded brand colour. */
+button.primary:disabled {
+	opacity: 1;
+	background: var(--bg);
+	border-color: var(--line);
+	color: var(--muted);
+	cursor: not-allowed;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+summary:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}
+
+.tabs {
+	display: flex;
+	gap: var(--space-1);
+	border-bottom: 1px solid var(--line);
+	margin: var(--space-3) 0 var(--space-5);
+}
+
+.tabs button {
+	border: 0;
+	border-bottom: 2px solid transparent;
+	border-radius: 0;
+	background: none;
+	padding: var(--space-2) var(--space-4);
+	color: var(--muted);
+}
+
+/* Weight stays constant so the tabs never shift; colour and the underline mark the current one. */
+.tabs button[aria-selected="true"] {
+	border-bottom-color: var(--accent);
+	color: var(--text);
+}
+
+input,
+select {
+	color: var(--text);
+	padding: var(--space-2);
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	background: var(--bg);
+	min-width: 0;
+}
+
+input::placeholder {
+	color: var(--muted);
+	opacity: 1;
+}
+
+label {
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-1);
+	color: var(--muted);
+}
+
+label.inline {
+	flex-direction: row;
+	align-items: center;
+	gap: var(--space-2);
+}
+
+.grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+	gap: var(--space-3);
+	align-items: end;
+}
+
+.grid .wide {
+	grid-column: 1 / -1;
+}
+
+fieldset.scope {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--space-2) var(--space-4);
+	margin: 0;
+	padding: 0;
+	border: 0;
+	min-width: 0;
+}
+
+fieldset.scope legend {
+	padding: 0;
+	margin-bottom: var(--space-1);
+	color: var(--muted);
+}
+
+fieldset.scope input[name="keys"] {
+	flex: 1;
+	min-width: 12rem;
+}
+
+.row,
+.toolbar,
+.actions,
+.commit {
+	display: flex;
+	gap: var(--space-2) var(--space-4);
+	align-items: center;
+	flex-wrap: wrap;
+}
+
+.row input {
+	flex: 1;
+}
+
+.commit {
+	margin-top: var(--space-4);
+}
+
+.hint,
+.empty,
+.reason {
+	color: var(--muted);
+}
+
+.hint {
+	text-wrap: pretty;
+	margin-top: var(--space-3);
+	font-size: 13px;
+	max-width: 75ch;
+}
+
+.empty {
+	margin: var(--space-2) 0 var(--space-4);
+}
+
+/* Workspace cards: the first question is "which copy needs attention?" */
+.card,
+details#register-panel {
+	background: var(--panel);
+	border: 1px solid var(--line);
+	border-radius: 8px;
+	padding: var(--space-3) var(--space-4);
+	margin-bottom: var(--space-3);
+}
+
+.card-head {
+	display: flex;
+	gap: var(--space-2) var(--space-3);
+	align-items: baseline;
+	flex-wrap: wrap;
+}
+
+.name {
+	font-size: 15px;
+	font-weight: 600;
+}
+
+.card-tools {
+	display: flex;
+	align-items: center;
+	gap: var(--space-3);
+	margin-left: auto;
+}
+
+.group-tag {
+	font-size: 12px;
+	color: var(--muted);
+}
+
+button.small {
+	padding: 2px var(--space-3);
+	font-size: 12px;
+	color: var(--muted);
+}
+
+button.danger {
+	color: var(--bad);
+	border-color: color-mix(in srgb, var(--bad) 35%, var(--line));
+}
+
+/* Remove sits apart from Save and Cancel. */
+.actions button.danger {
+	margin-left: auto;
+}
+
+.card form.edit {
+	margin: var(--space-3) 0 var(--space-2) var(--space-5);
+	padding-top: var(--space-3);
+	border-top: 1px solid var(--line);
+}
+
+.card form.edit .hint {
+	margin-top: 0;
+}
+
+.notice {
+	margin: 0;
+	padding: var(--space-2) var(--space-3);
+	border: 1px solid color-mix(in srgb, var(--warn) 30%, var(--line));
+	border-radius: 6px;
+	background: color-mix(in srgb, var(--warn) 6%, var(--panel));
+	max-width: 75ch;
+}
+
+/* The dot carries the workspace state (settled or needs attention); the text repeats it. */
+.dot {
+	align-self: center;
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	flex: none;
+	background: var(--ok);
+}
+
+.attention .dot {
+	background: var(--warn);
+}
+
+/* Everything under the head lines up with the name: dot 8px + gap 12px. */
+.commit-line,
+.status-line,
+.meta,
+.card details {
+	margin: var(--space-1) 0 0 var(--space-5);
+}
+
+.status-line {
+	font-variant-numeric: tabular-nums;
+}
+
+.commit-line {
+	font-size: 13px;
+	overflow-wrap: anywhere;
+}
+
+.hash {
+	color: var(--muted);
+	font-size: 12px;
+}
+
+/* Commit graph: one SVG for the lanes, one list row per commit, both 28px tall. */
+.c0 {
+	--lane: var(--l0);
+}
+.c1 {
+	--lane: var(--l1);
+}
+.c2 {
+	--lane: var(--l2);
+}
+.c3 {
+	--lane: var(--l3);
+}
+.c4 {
+	--lane: var(--l4);
+}
+.c5 {
+	--lane: var(--l5);
+}
+.c6 {
+	--lane: var(--l6);
+}
+.c7 {
+	--lane: var(--l7);
+}
+
+.graph {
+	display: flex;
+	margin-top: var(--space-2);
+	max-height: 420px;
+	overflow: auto;
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	font-size: 12px;
+}
+
+.lanes {
+	flex: none;
+	position: sticky;
+	left: 0;
+	background: var(--panel);
+}
+
+.lanes path {
+	fill: none;
+	stroke: var(--lane);
+	stroke-width: 2;
+}
+
+.lanes circle {
+	fill: var(--lane);
+	stroke: var(--panel);
+	stroke-width: 2;
+}
+
+/* The checked-out commit is a ring, as in most Git clients. */
+.lanes circle.head {
+	fill: var(--panel);
+	stroke: var(--lane);
+	stroke-width: 2.5;
+}
+
+.graph ol {
+	flex: 1;
+	min-width: 0;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.graph li {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(0, 9rem) 6.5rem 4.5rem;
+	gap: var(--space-3);
+	align-items: center;
+	height: 28px;
+	padding-right: var(--space-3);
+	white-space: nowrap;
+}
+
+.graph li:hover {
+	background: color-mix(in srgb, var(--text) 4%, transparent);
+}
+
+.message {
+	display: flex;
+	align-items: center;
+	gap: var(--space-1);
+	min-width: 0;
+}
+
+.subject,
+.author {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.author,
+.age {
+	color: var(--muted);
+}
+
+.age {
+	font-variant-numeric: tabular-nums;
+}
+
+.graph li.current .subject {
+	font-weight: 600;
+}
+
+/* Ref pills look the same in the card head, the branch table and the graph.
+ * Colour follows the kind of ref, never the lane, so "master" is always the same green. */
+.ref {
+	--ref: var(--local);
+	display: inline-flex;
+	align-items: center;
+	gap: var(--space-1);
+	flex: none;
+	max-width: 16rem;
+	overflow: hidden;
+	padding: 0 var(--space-2);
+	border: 1px solid color-mix(in srgb, var(--ref) 40%, transparent);
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--ref) 10%, var(--panel));
+	color: var(--ref);
+	font-size: 12px;
+	font-weight: 500;
+	line-height: 18px;
+	white-space: nowrap;
+	vertical-align: middle;
+}
+
+.ref-name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.ref.current {
+	background: var(--ref);
+	border-color: var(--ref);
+	color: var(--panel);
+}
+
+.ref.remote {
+	--ref: var(--remote);
+}
+
+.ref.tag {
+	--ref: var(--muted);
+	background: none;
+	border-color: var(--line);
+}
+
+.ref .icon {
+	flex: none;
+	width: 12px;
+	height: 12px;
+	fill: currentColor;
+}
+
+/* Same commit on the remote: the pill gains a blue tail instead of a second pill. */
+.twin {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	margin: 0 calc(var(--space-2) * -1) 0 var(--space-1);
+	padding: 0 var(--space-2) 0 var(--space-1);
+	border-left: 1px solid color-mix(in srgb, var(--remote) 40%, transparent);
+	background: color-mix(in srgb, var(--remote) 12%, var(--panel));
+	color: var(--remote);
+}
+
+.legend {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--space-2);
+	margin-top: var(--space-2);
+}
+
+.status-line .warn {
+	color: var(--warn);
+	font-weight: 500;
+}
+
+.sep {
+	color: var(--muted);
+}
+
+.meta {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--space-1) var(--space-4);
+	font-size: 12px;
+	color: var(--muted);
+}
+
+/* Paths stay monospace: Korean Windows UI fonts draw the backslash as a won sign. */
+.path {
+	font-size: 12px;
+	overflow-wrap: anywhere;
+}
+
+.card details {
+	margin-top: var(--space-2);
+	font-size: 13px;
+}
+
+/* Loading: the shape of the cards that are coming, without motion. */
+.skeleton .bar {
+	display: block;
+	height: 12px;
+	border-radius: 4px;
+	background: color-mix(in srgb, var(--line) 70%, var(--panel));
+}
+
+.skeleton .bar + .bar {
+	margin-top: var(--space-2);
+}
+
+.skeleton .short {
+	width: 20%;
+}
+
+.skeleton .medium {
+	width: 35%;
+}
+
+.skeleton .long {
+	width: 55%;
+}
+
+summary {
+	cursor: pointer;
+	color: var(--muted);
+	width: fit-content;
+}
+
+details.more summary {
+	font-size: 13px;
+}
+
+details#register-panel summary {
+	color: var(--text);
+	font-weight: 600;
+}
+
+details#register-panel form {
+	margin-top: var(--space-3);
+}
+
+details.more .grid {
+	margin-top: var(--space-3);
+}
+
+/* Sync preview, grouped by what will happen. */
+.sync-group {
+	margin-top: var(--space-4);
+}
+
+.sync-group h2 {
+	display: flex;
+	align-items: center;
+	gap: var(--space-2);
+	margin-bottom: var(--space-2);
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--muted);
+}
+
+.sync-group.update h2,
+.sync-group.updated h2 {
+	color: var(--ok);
+}
+
+.sync-group.blocked h2 {
+	color: var(--warn);
+}
+
+.sync-group.failed h2 {
+	color: var(--bad);
+}
+
+.count {
+	min-width: 20px;
+	padding: 0 var(--space-2);
+	border-radius: 999px;
+	background: color-mix(in srgb, currentColor 12%, transparent);
+	font-size: 12px;
+	text-align: center;
+	font-variant-numeric: tabular-nums;
+}
+
+.sync-group ul {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+	background: var(--panel);
+	border: 1px solid var(--line);
+	border-radius: 8px;
+}
+
+.sync-row {
+	display: grid;
+	grid-template-columns: minmax(80px, 160px) minmax(0, 1fr);
+	gap: var(--space-3);
+	padding: var(--space-2) var(--space-4);
+}
+
+.sync-row + .sync-row {
+	border-top: 1px solid var(--line);
+}
+
+.sync-group.none .sync-row {
+	color: var(--muted);
+}
+
+.backup {
+	font-family: var(--mono);
+	font-size: 12px;
+	color: var(--muted);
+	overflow-wrap: anywhere;
+}
+
+.plan-title {
+	margin-top: var(--space-4);
+	font-weight: 600;
+}
+
+.state.add {
+	color: var(--ok);
+}
+
+.state.same {
+	color: var(--muted);
+}
+
+.state.conflict,
+.error {
+	color: var(--bad);
+}
+
+/* Errors sit next to the action that produced them. */
+.alert {
+	margin-top: var(--space-3);
+	padding: var(--space-2) var(--space-3);
+	border: 1px solid color-mix(in srgb, var(--bad) 40%, var(--line));
+	border-radius: 6px;
+	background: color-mix(in srgb, var(--bad) 7%, var(--panel));
+	color: var(--bad);
+	max-width: 75ch;
+}
+
+table {
+	width: 100%;
+	border-collapse: collapse;
+	margin-top: var(--space-2);
+	background: var(--panel);
+	font-variant-numeric: tabular-nums;
+}
+
+th,
+td {
+	text-align: left;
+	padding: var(--space-2) var(--space-3);
+	border-bottom: 1px solid var(--line);
+	overflow-wrap: anywhere;
+}
+
+th {
+	color: var(--muted);
+	font-weight: 500;
+}
+
+/* Branch table: flush with the card text, counts narrow and right-aligned. */
+.branches th:first-child,
+.branches td:first-child {
+	padding-left: 0;
+}
+
+.branches th:nth-child(n + 3),
+.branches td:nth-child(n + 3) {
+	width: 6rem;
+	text-align: right;
+}
+
+.none {
+	color: var(--muted);
+}
+
+/* The status bar only appears when it has something to say. */
+footer:has(#message:empty):has(#footer-alert[hidden]) {
+	display: none;
+}
+
+footer {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--space-1) var(--space-3);
+	padding: var(--space-2) var(--space-5);
+	border-top: 1px solid var(--line);
+	background: var(--panel);
+	min-height: 36px;
+	color: var(--muted);
+}
+
+footer .alert {
+	margin: 0;
+	padding: var(--space-1) var(--space-2);
+}
+
+#message {
+	display: flex;
+	align-items: center;
+	gap: var(--space-2);
+}
+
+.spinner {
+	width: 12px;
+	height: 12px;
+	border: 2px solid var(--line);
+	border-top-color: var(--accent);
+	border-radius: 50%;
+	animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.spinner {
+		animation: none;
+		border-top-color: var(--line);
+		background: var(--accent);
+	}
+}

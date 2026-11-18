@@ -1,0 +1,200 @@
+#!/usr/bin/env node
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { parseArgs } from "node:util";
+
+import { applyEnv, planEnv } from "./env.ts";
+import { ClonelaneError, fail } from "./errors.ts";
+import { addWorkspace, readRegistry, selectWorkspaces } from "./registry.ts";
+import { fetchWorkspaces, syncWorkspaces } from "./sync.ts";
+import { inspectWorkspace } from "./workspaces.ts";
+
+const help = `Clonelane — keep your Git workspaces in the same lane.
+
+  clonelane register <path> --name <name> --group <group> [--base master] [--remote origin]
+  clonelane status [--group <group>] [--json]
+  clonelane fetch [--group <group>]
+  clonelane sync [--group <group>] [--dry-run] [--rebase]
+  clonelane env plan|apply --source <name> --target <name> --all-keys | --keys API_URL,TOKEN
+                        [--file .env] [--overwrite] [--public-keys VITE_API_URL]
+
+Global: --config <file> (default: ~/.config/clonelane/registry.json), --help
+
+status and sync --dry-run use cached remote refs and do not fetch.
+sync fetches the selected base before updating. No command pushes.
+--rebase applies only to the current, unpublished, linear feature branch.
+env output shows key names and states only. Applying normalizes comments/formatting.
+`;
+
+async function main(): Promise<void> {
+	const { values, positionals } = parseArgs({
+		allowPositionals: true,
+		options: {
+			config: { type: "string" },
+			name: { type: "string" },
+			group: { type: "string" },
+			base: { type: "string" },
+			remote: { type: "string" },
+			json: { type: "boolean" },
+			"dry-run": { type: "boolean" },
+			rebase: { type: "boolean" },
+			help: { type: "boolean" },
+			source: { type: "string" },
+			target: { type: "string" },
+			keys: { type: "string" },
+			"all-keys": { type: "boolean" },
+			file: { type: "string" },
+			overwrite: { type: "boolean" },
+			"public-keys": { type: "string" },
+		},
+	});
+	if (values.help || positionals.length === 0) {
+		console.log(help);
+		return;
+	}
+	const config =
+		values.config ?? join(homedir(), ".config", "clonelane", "registry.json");
+	const [command, argument] = positionals;
+	const allowed: Record<string, string[]> = {
+		register: ["name", "group", "base", "remote"],
+		status: ["group", "json"],
+		fetch: ["group"],
+		sync: ["group", "dry-run", "rebase"],
+		env: [
+			"source",
+			"target",
+			"keys",
+			"all-keys",
+			"file",
+			"public-keys",
+			...(argument === "apply" ? ["overwrite"] : []),
+		],
+	};
+	if (
+		Object.keys(values).some(
+			(key) =>
+				!["config", "help", ...(allowed[command ?? ""] ?? [])].includes(key),
+		)
+	) {
+		fail(
+			"USAGE",
+			"This command received an unsupported option. Run clonelane --help.",
+		);
+	}
+	const print = (data: unknown) => console.log(JSON.stringify(data, null, 2));
+	if (command === "register") {
+		if (!argument || !values.name || !values.group || positionals.length !== 2)
+			fail("USAGE", "register requires a path, --name and --group.");
+		const workspace = await addWorkspace(config, {
+			path: argument,
+			name: values.name,
+			group: values.group,
+			remote: values.remote,
+			base: values.base,
+		});
+		print({
+			registered: workspace.name,
+			group: workspace.group,
+			path: workspace.path,
+		});
+		return;
+	}
+	const registry = await readRegistry(config);
+	if (command === "env") {
+		if (
+			!["plan", "apply"].includes(argument ?? "") ||
+			positionals.length !== 2 ||
+			!values.source ||
+			!values.target ||
+			// Exactly one: a missing --keys must never silently become "all".
+			!values.keys === !values["all-keys"]
+		)
+			fail(
+				"USAGE",
+				"env plan|apply requires --source, --target and either --all-keys or --keys.",
+			);
+		const source = registry.workspaces.find(
+			(item) => item.name === values.source,
+		);
+		const target = registry.workspaces.find(
+			(item) => item.name === values.target,
+		);
+		if (!source || !target)
+			fail("WORKSPACE", "Source or target is not registered.");
+		const options = {
+			file: values.file ?? ".env",
+			keys: values.keys?.split(",") ?? ("all" as const),
+			overwrite: values.overwrite,
+			publicKeys: values["public-keys"]?.split(","),
+		};
+		print(
+			await (argument === "apply" ? applyEnv : planEnv)(
+				source,
+				target,
+				options,
+			),
+		);
+		return;
+	}
+	if (positionals.length !== 1)
+		fail("USAGE", "Unexpected positional argument.");
+	const selected = selectWorkspaces(registry, values.group);
+	if (command === "status") {
+		const statuses = [];
+		for (const workspace of selected)
+			statuses.push(await inspectWorkspace(workspace));
+		if (values.json) print(statuses);
+		else {
+			console.table(
+				statuses.map((state) => ({
+					name: state.workspace.name,
+					path: state.workspace.path,
+					branch: state.branch ?? "(detached)",
+					dirty: state.dirty,
+					operation: state.operation,
+					"ahead of base": state.baseAhead,
+					"behind base": state.baseBehind,
+				})),
+			);
+			for (const state of statuses) {
+				console.log(`\n${state.workspace.name}: local branches`);
+				console.table(state.branches);
+			}
+			console.log("Remote refs are cached. Run clonelane fetch to refresh.");
+		}
+		return;
+	}
+	if (command === "fetch") {
+		await fetchWorkspaces(selected);
+		print({ fetched: selected.map((item) => item.name) });
+		return;
+	}
+	if (command === "sync") {
+		if (!values["dry-run"]) await fetchWorkspaces(selected);
+		const results = await syncWorkspaces(selected, {
+			dryRun: values["dry-run"],
+			rebase: values.rebase,
+		});
+		print(results);
+		if (results.some((result) => result.result === "failed"))
+			process.exitCode = 1;
+		return;
+	}
+	fail("USAGE", "Unknown command. Run clonelane --help.");
+}
+
+main().catch((error) => {
+	// Never print raw errors, CLI arguments, Git output or environment contents.
+	console.error(
+		JSON.stringify(
+			error instanceof ClonelaneError
+				? { error: error.code, message: error.message }
+				: {
+						error: "FAILED",
+						message:
+							"Operation failed. Details were suppressed to protect local secrets.",
+					},
+		),
+	);
+	process.exitCode = 1;
+});
