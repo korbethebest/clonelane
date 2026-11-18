@@ -32,7 +32,14 @@ jobs:
       - run: pnpm build
       - name: Package contents
         run: npm pack --dry-run --ignore-scripts
+      - name: npm supports trusted publishing (11.5.1+)
+        run: node -e "const [a, b, c] = require('node:child_process').execSync('npm --version').toString().trim().split('.').map(Number); if (a < 11 || (a === 11 && (b < 5 || (b === 5 && c < 1)))) { console.error('npm ' + [a, b, c].join('.') + ' is too old'); process.exit(1); }"
       - name: Publish
+        # Trusted publishing (OIDC) is used when no token is set. NPM_TOKEN exists only to
+        # bootstrap the very first release, before npm lets a trusted publisher be added;
+        # delete it from the npm environment right after.
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --provenance --access public --ignore-scripts
   github-release:
     needs: publish
