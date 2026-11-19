@@ -691,10 +691,12 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 			],
 			["CONFLICT (content): Merge conflict in a.txt", "GIT_CONFLICT"],
 			["error: could not apply 1a2b3c4... feature", "GIT_CONFLICT"],
+			["Could not apply 1a2b3c4... feature", "GIT_CONFLICT"],
 			[
 				"remote: Access denied\nfatal: unable to access the repository",
 				"GIT_AUTH",
 			],
+			["ERROR: Access denied", "GIT_AUTH"],
 			// Not conflicts or credential problems, despite the words they contain.
 			[
 				"error: pathspec 'conflict-notes' did not match any file(s)",
@@ -711,6 +713,18 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 				"message must not echo Git output",
 			);
 		}
+		// stdout (file contents, subjects) only counts for Git's conflict report.
+		assert.equal(
+			describeGitFailure(
+				"fatal: bad object",
+				"subject: authentication failed",
+			)[0],
+			"GIT_FAILED",
+		);
+		assert.equal(
+			describeGitFailure("", "Automatic merge failed; fix conflicts")[0],
+			"GIT_CONFLICT",
+		);
 	});
 
 	test("a real merge conflict is classified from Git's stdout", async (t) => {

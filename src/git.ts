@@ -63,10 +63,14 @@ export async function git(path: string, args: string[]): Promise<string> {
 		"GIT_INDEX_FILE",
 		"GIT_OBJECT_DIRECTORY",
 		"GIT_ALTERNATE_OBJECT_DIRECTORIES",
-		// LC_ALL would override LC_MESSAGES below; the character locale (LANG, LC_CTYPE) stays.
-		"LC_ALL",
 	])
 		delete env[key];
+	// LC_ALL would override LC_MESSAGES below. Keep its character locale as LC_CTYPE so only
+	// the message language changes.
+	if (env.LC_ALL) {
+		env.LC_CTYPE ??= env.LC_ALL;
+		delete env.LC_ALL;
+	}
 	try {
 		const { stdout } = await exec(
 			executable,
@@ -124,10 +128,9 @@ export async function git(path: string, args: string[]): Promise<string> {
 		// Git is launched by absolute path, so ENOENT here means the working folder is gone.
 		if (failure.code === "ENOENT")
 			fail("GIT_NO_FOLDER", "The workspace folder does not exist any more.");
-		// Git reports some failures (such as "CONFLICT (content)") on stdout. Both streams are
-		// only matched here, never shown.
 		const [code, message] = describeGitFailure(
-			`${String(failure.stderr ?? "")}\n${String(failure.stdout ?? "")}`,
+			String(failure.stderr ?? ""),
+			String(failure.stdout ?? ""),
 		);
 		fail(code, message);
 	}
@@ -137,9 +140,8 @@ export async function git(path: string, args: string[]): Promise<string> {
 // only matched against known failure kinds to tell the user what to do next.
 const failures: [RegExp, string, string][] = [
 	[
-		// "remote:"/"fatal:" access denied is a server refusing credentials; Windows file errors
-		// say "Access is denied" and are not matched.
-		/could not read (username|password)|authentication failed|permission denied \(publickey|terminal prompts disabled|returned error: 40[13]|http 40[13]|^(?:remote|fatal): .*access denied/im,
+		// Windows file errors read "Access is denied", which this does not match.
+		/could not read (username|password)|authentication failed|permission denied \(publickey|terminal prompts disabled|returned error: 40[13]|http 40[13]|access denied/i,
 		"GIT_AUTH",
 		"The remote rejected the credentials. Check that this account can fetch the repository with Git.",
 	],
@@ -173,17 +175,30 @@ const failures: [RegExp, string, string][] = [
 		"GIT_LOCAL_CHANGES",
 		"Local files would be overwritten. Commit or move them first.",
 	],
-	// Git's own conflict reports, not any line that happens to contain the word.
-	[
-		/^CONFLICT \(|could not apply [0-9a-f]+|automatic merge failed/m,
-		"GIT_CONFLICT",
-		"Git stopped on a conflict.",
-	],
 ];
 
-export function describeGitFailure(output: string): [string, string] {
+// Git's own conflict reports, not any line that happens to contain the word. Git prints
+// "CONFLICT (...)" and "Automatic merge failed" on stdout, "Could not apply" on stderr.
+const conflictReports = [
+	/^CONFLICT \(/m,
+	/^(?:error: )?could not apply [0-9a-f]+|^automatic merge failed/im,
+];
+const conflict = {
+	test: (output: string) =>
+		conflictReports.some((report) => report.test(output)),
+};
+const conflictMessage = "Git stopped on a conflict.";
+
+// stderr is matched against every kind. stdout can hold file contents, subjects or branch
+// names, so it is only checked for Git's conflict report.
+export function describeGitFailure(
+	stderr: string,
+	stdout = "",
+): [string, string] {
 	for (const [pattern, code, message] of failures)
-		if (pattern.test(output)) return [code, message];
+		if (pattern.test(stderr)) return [code, message];
+	if (conflict.test(stderr) || conflict.test(stdout))
+		return ["GIT_CONFLICT", conflictMessage];
 	return [
 		"GIT_FAILED",
 		"Git operation failed. Inspect the workspace with Git; command output was suppressed.",

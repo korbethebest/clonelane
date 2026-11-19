@@ -225,8 +225,14 @@ async function syncBaseRef(
 	};
 }
 
-// dryRun is read-only: it deliberately does NOT fetch. With `fetch`, a real sync fetches
-// first and skips only the workspaces whose fetch failed.
+/**
+ * Fast-forwards (and, with `rebase`, rebases) every workspace, one at a time.
+ *
+ * - `dryRun`: read-only preview from the cached remote refs. It never fetches, and
+ *   `fetch` is ignored; call `fetchWorkspaces()` first for a fresh preview.
+ * - `fetch`: fetch first, then skip only the workspaces whose fetch failed
+ *   (`reason: "fetch-failed"`).
+ */
 export async function syncWorkspaces(
 	workspaces: Workspace[],
 	options: { dryRun?: boolean; rebase?: boolean; fetch?: boolean } = {},
