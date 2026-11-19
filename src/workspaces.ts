@@ -46,17 +46,38 @@ export async function registerWorkspace(input: {
 	remote?: string;
 	base?: string;
 }): Promise<Workspace> {
+	return (await identify(input)).workspace;
+}
+
+// Resolves a folder to its workspace identity and shared .git directory in as few Git
+// processes as possible: each one costs real time on Windows.
+async function identify(input: {
+	name: string;
+	path: string;
+	group: string;
+	remote?: string;
+	base?: string;
+}): Promise<{ workspace: Workspace; commonDir: string }> {
 	validName(input.name, "workspace name");
 	validName(input.group, "group name");
 	const cwd = resolve(input.path);
 	const base = input.base ?? "master";
 	// Independent reads run together: every Git process costs real time on Windows.
-	const [top, listing] = await Promise.all([
-		git(cwd, ["rev-parse", "--show-toplevel"]),
+	const [dirs, listing] = await Promise.all([
+		git(cwd, [
+			"rev-parse",
+			"--path-format=absolute",
+			"--show-toplevel",
+			"--git-common-dir",
+		]),
 		git(cwd, ["remote", "-v"]),
 		validBranch(cwd, base),
 	]);
-	const root = await realpath(top);
+	const [top = "", rawCommonDir = ""] = dirs.split("\n");
+	const [root, commonDir] = await Promise.all([
+		realpath(top),
+		realpath(rawCommonDir),
+	]);
 	const urls = new Map<string, string>();
 	for (const line of listing.split("\n")) {
 		const match = /^(\S+)\t(.*) \(fetch\)$/.exec(line);
@@ -79,28 +100,21 @@ export async function registerWorkspace(input: {
 		);
 	const repository = repositoryIdentity(urls.get(remote) ?? "", root);
 	return {
-		name: input.name,
-		path: root,
-		group: input.group,
-		repository,
-		remote,
-		base,
+		workspace: {
+			name: input.name,
+			path: root,
+			group: input.group,
+			repository,
+			remote,
+			base,
+		},
+		commonDir,
 	};
 }
 
-/** The shared .git directory; linked worktrees of one clone have the same one. */
-export async function commonDirOf(path: string): Promise<string> {
-	return realpath(
-		await git(path, [
-			"rev-parse",
-			"--path-format=absolute",
-			"--git-common-dir",
-		]),
-	);
-}
-
-export async function assertIdentity(workspace: Workspace): Promise<void> {
-	const actual = await registerWorkspace(workspace);
+/** Confirms the folder is still the registered repository; returns its shared .git dir. */
+export async function assertIdentity(workspace: Workspace): Promise<string> {
+	const { workspace: actual, commonDir } = await identify(workspace);
 	if (
 		actual.path !== workspace.path ||
 		actual.repository !== workspace.repository
@@ -110,6 +124,7 @@ export async function assertIdentity(workspace: Workspace): Promise<void> {
 			"Workspace path or remote identity changed. Register it again before syncing.",
 		);
 	}
+	return commonDir;
 }
 
 async function counts(

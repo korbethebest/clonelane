@@ -6,10 +6,13 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- Faster `fetch`: separate clones of one repository contact the remote once. The other clones copy the fresh base from that clone on disk (no network, no credential helper) and fall back to their own remote if that fails. `FetchResult.source` names the clone a copy came from. Checking a workspace before a fetch also starts one Git process fewer.
 - A recovery journal. Every branch move `sync` makes is recorded with its backup ref and outcome in the clone's `.git` directory. `clonelane history` lists them, and `clonelane restore <id> [--dry-run]` moves a branch back to its backup when nothing has changed since; otherwise it refuses with a reason. Restores are backed up and journaled too.
 - `status`, the desktop app and the library (`WorkspaceStatus.interrupted`) flag moves that started but never finished. The library exports `listOperations()` and `restoreOperation()`.
 
 ### Changed
+
+- The desktop app's **Refresh** and **Fetch** buttons are now **Reload local** and **Fetch remote**, with tooltips that say which one uses the network.
 
 - Failures say what went wrong and what to do next. Git's output is still never shown; it is matched to known kinds such as rejected credentials, an unreachable remote, a missing base branch or a stale `.lock` file, each with a fixed message.
 - `fetch` reports each workspace separately, and one failure no longer stops the others. A real `sync` skips only the workspaces whose fetch failed (`fetch-failed`).

@@ -797,6 +797,39 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		assert.match(locked?.message ?? "", /lock/);
 	});
 
+	test("clones of one repository fetch from the network once and copy from each other", async (t) => {
+		const f = await fixture(t);
+		const published = await f.publish();
+		const fetched = await fetchWorkspaces([f.a, f.b]);
+		assert.deepEqual(
+			fetched.map((item) => [item.name, item.result, item.source]),
+			[
+				["first", "fetched", undefined],
+				["second", "fetched", "first"],
+			],
+		);
+		assert.equal(
+			await run(f.second, ["rev-parse", "refs/remotes/origin/master"]),
+			published,
+		);
+		// When the first clone's fetch fails, the others still fetch from the network.
+		const broken = await registerWorkspace({
+			name: "broken",
+			path: f.first,
+			group: "demo",
+			base: "no-such-branch",
+		});
+		const next = await f.publish("next.txt");
+		const fallback = await fetchWorkspaces([broken, f.b]);
+		assert.equal(fallback[0]?.result, "failed");
+		assert.equal(fallback[1]?.result, "fetched");
+		assert.equal(fallback[1]?.source, undefined);
+		assert.equal(
+			await run(f.second, ["rev-parse", "refs/remotes/origin/master"]),
+			next,
+		);
+	});
+
 	test("sync journals each move with a backup, and restore undoes it only once", async (t) => {
 		const f = await fixture(t);
 		const before = await run(f.first, ["rev-parse", "HEAD"]);

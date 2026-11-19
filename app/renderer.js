@@ -149,7 +149,7 @@ function gate() {
 				? `Updates ${plural(count, "workspace")}.`
 				: blocked
 					? "Nothing can be updated yet. Resolve what needs attention, then preview again."
-					: "Nothing to update. Preview does not fetch: click Fetch, then preview again.";
+					: "Nothing to update. Preview does not fetch: click Fetch remote, then preview again.";
 	}
 
 	const plan = view.env;
@@ -259,7 +259,7 @@ function render() {
 			el(
 				"p",
 				{ className: "empty" },
-				"Could not read the workspaces. Refresh to try again.",
+				"Could not read the workspaces. Click Reload local to try again.",
 			),
 		);
 	else list.replaceChildren(...(view.statuses ?? []).map(renderWorkspace));
@@ -891,7 +891,7 @@ $("#fetch").addEventListener("click", async () => {
 	const fetched = await call(
 		"fetch",
 		{ group: group() },
-		{ busy: "Fetching from remotes…" },
+		{ busy: "Fetching from the remote…" },
 	);
 	if (!fetched) return;
 	// Remote refs moved, so an earlier sync preview no longer holds.
@@ -907,7 +907,12 @@ $("#fetch").addEventListener("click", async () => {
 			message: `Fetched ${fetched.length - failed.length} of ${plural(fetched.length, "workspace")}. ${failed.map((item) => `${item.name}: ${item.message}`).join(" · ")}`,
 			code: [...new Set(failed.map((item) => item.error))].join(", "),
 		});
-	else say(`Fetched ${plural(fetched.length, "workspace")}.`);
+	else {
+		const copied = fetched.filter((item) => item.source).length;
+		say(
+			`Fetched ${plural(fetched.length, "workspace")}${copied ? ` (${copied} copied from another clone on this computer)` : ""}.`,
+		);
+	}
 });
 
 $("#browse").addEventListener("click", async () => {
