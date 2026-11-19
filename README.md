@@ -47,6 +47,8 @@ clonelane sync --group project --rebase
 
 `status` and `sync --dry-run` are read-only and do not contact remotes. Their view can be stale: `fetch` first when you want a fresh preview. `sync` without `--dry-run` fetches the selected base branch before applying changes. A newly advanced remote can make execution differ from a previous preview.
 
+Separate clones of the same repository contact the remote only once per fetch: the first clone fetches, and the others copy its fresh base branch over the local disk, which skips the network and the credential helper. The result says which clone each copy came from (`source`). If a copy fails, that clone fetches from its own remote.
+
 Each workspace is fetched and synced on its own: one failure (an unreachable remote, rejected credentials, a missing base branch, a stale `.lock` file) is reported for that workspace with a short next step, and the others continue. `fetch`, `sync` and `status` exit with code 1 when any workspace failed. Git's own output is never printed, because it can contain credentials; failures are matched to known kinds instead (`GIT_AUTH`, `GIT_NETWORK`, `GIT_REMOTE_REF`, `GIT_REMOTE_MISSING`, `GIT_LOCKED`, `GIT_LOCAL_CHANGES`, `GIT_CONFLICT`, `GIT_TIMEOUT`, `GIT_OUTPUT_TOO_LARGE`, `GIT_NO_FOLDER`, `GIT_NOT_REPO`), with `GIT_FAILED` for anything else.
 
 | Workspace state | Behavior |
@@ -126,7 +128,7 @@ pnpm app
 pnpm app --config=/path/to/registry.json
 ```
 
-An Electron window over the same core: workspace overview with every local branch and a commit graph, register (folder picker), rename / regroup / remove (registry only; folders are never touched), fetch, sync preview → apply, and env plan → apply. It uses the CLI's registry by default and follows the same rules: **Apply** is enabled only after a preview with identical options, applying sync fetches first, and env screens show key names and states only. Errors are sanitized like the CLI.
+An Electron window over the same core: workspace overview with every local branch and a commit graph, register (folder picker), rename / regroup / remove (registry only; folders are never touched), **Reload local** (re-read Git state on disk, no network), **Fetch remote** (download the base branch), sync preview → apply, and env plan → apply. It uses the CLI's registry by default and follows the same rules: **Apply** is enabled only after a preview with identical options, applying sync fetches first, and env screens show key names and states only. Errors are sanitized like the CLI.
 
 The interface is English only. Sync reasons from the core are shown through `app/labels.js`; `tests/labels.spec.ts` fails when the core adds a reason without a label.
 

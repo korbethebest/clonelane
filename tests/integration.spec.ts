@@ -525,6 +525,47 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		assert.equal((await syncWorkspaces([f.a]))[0]?.error, "LOCKED");
 	});
 
+	test("cached status reads still notice new commits, changes and a changed remote", async (t) => {
+		const f = await fixture(t);
+		const published = await f.publish();
+		await fetchWorkspaces([f.a]);
+		const reuse = { reuseIdentity: true };
+		// The first read learns where the config lives, the second caches, later ones reuse.
+		await inspectWorkspace(f.a, reuse);
+		await inspectWorkspace(f.a, reuse);
+		const before = await inspectWorkspace(f.a, reuse);
+		assert.equal(before.baseBehind, 1);
+		assert.equal(before.dirty, false);
+		// A second read uses the cached identity and counts; new local work still shows.
+		await writeFile(join(f.first, "local.txt"), "local\n");
+		await run(f.first, ["add", "local.txt"]);
+		await run(f.first, ["commit", "-m", "local work"]);
+		await writeFile(join(f.first, "hello.txt"), "edited\n");
+		const after = await inspectWorkspace(f.a, reuse);
+		assert.equal(after.baseAhead, 1);
+		assert.equal(after.baseBehind, 1);
+		assert.equal(after.dirty, true);
+		assert.equal(after.subject, "local work");
+		assert.equal(after.baseHead, published);
+		assert.equal(after.branches.find((item) => item.current)?.name, "master");
+		// Changing the remote rewrites .git/config, so the cached identity is dropped.
+		await run(f.first, [
+			"remote",
+			"set-url",
+			"origin",
+			"https://example.invalid/other.git",
+		]);
+		await assert.rejects(inspectWorkspace(f.a, reuse), {
+			code: "IDENTITY_CHANGED",
+		});
+		// A detached HEAD has no branch row and reads its subject separately.
+		await run(f.first, ["remote", "set-url", "origin", f.remote]);
+		await run(f.first, ["checkout", "--detach", "HEAD~1"]);
+		const detached = await inspectWorkspace(f.a, reuse);
+		assert.equal(detached.branch, null);
+		assert.equal(detached.subject, "initial");
+	});
+
 	test("changed remote identity blocks operations without exposing its credentials", async (t) => {
 		const f = await fixture(t);
 		await run(f.first, [
@@ -795,6 +836,39 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		assert.equal(locked?.result, "failed");
 		assert.equal(locked?.error, "GIT_LOCKED");
 		assert.match(locked?.message ?? "", /lock/);
+	});
+
+	test("clones of one repository fetch from the network once and copy from each other", async (t) => {
+		const f = await fixture(t);
+		const published = await f.publish();
+		const fetched = await fetchWorkspaces([f.a, f.b]);
+		assert.deepEqual(
+			fetched.map((item) => [item.name, item.result, item.source]),
+			[
+				["first", "fetched", undefined],
+				["second", "fetched", "first"],
+			],
+		);
+		assert.equal(
+			await run(f.second, ["rev-parse", "refs/remotes/origin/master"]),
+			published,
+		);
+		// When the first clone's fetch fails, the others still fetch from the network.
+		const broken = await registerWorkspace({
+			name: "broken",
+			path: f.first,
+			group: "demo",
+			base: "no-such-branch",
+		});
+		const next = await f.publish("next.txt");
+		const fallback = await fetchWorkspaces([broken, f.b]);
+		assert.equal(fallback[0]?.result, "failed");
+		assert.equal(fallback[1]?.result, "fetched");
+		assert.equal(fallback[1]?.source, undefined);
+		assert.equal(
+			await run(f.second, ["rev-parse", "refs/remotes/origin/master"]),
+			next,
+		);
 	});
 
 	test("sync journals each move with a backup, and restore undoes it only once", async (t) => {

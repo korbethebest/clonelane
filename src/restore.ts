@@ -8,7 +8,6 @@ import { begin, finish, type Operation, readOperations } from "./journal.ts";
 import { busyElsewhere } from "./sync.ts";
 import {
 	assertIdentity,
-	commonDirOf,
 	inspectWorkspace,
 	type Workspace,
 } from "./workspaces.ts";
@@ -32,8 +31,7 @@ export interface RestoreResult {
 export async function listOperations(
 	workspace: Workspace,
 ): Promise<Operation[]> {
-	await assertIdentity(workspace);
-	const operations = await readOperations(await commonDirOf(workspace.path));
+	const operations = await readOperations(await assertIdentity(workspace));
 	return operations.filter((item) => item.path === workspace.path);
 }
 

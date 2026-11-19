@@ -1,4 +1,5 @@
-import { realpath } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { fail } from "./errors.ts";
@@ -46,17 +47,41 @@ export async function registerWorkspace(input: {
 	remote?: string;
 	base?: string;
 }): Promise<Workspace> {
+	return (await identify(input)).workspace;
+}
+
+// Resolves a folder to its workspace identity and shared .git directory in as few Git
+// processes as possible: each one costs real time on Windows.
+async function identify(input: {
+	name: string;
+	path: string;
+	group: string;
+	remote?: string;
+	base?: string;
+}): Promise<{ workspace: Workspace; commonDir: string; gitDir: string }> {
 	validName(input.name, "workspace name");
 	validName(input.group, "group name");
 	const cwd = resolve(input.path);
 	const base = input.base ?? "master";
 	// Independent reads run together: every Git process costs real time on Windows.
-	const [top, listing] = await Promise.all([
-		git(cwd, ["rev-parse", "--show-toplevel"]),
+	const [dirs, listing] = await Promise.all([
+		git(cwd, [
+			"rev-parse",
+			"--path-format=absolute",
+			"--show-toplevel",
+			"--git-common-dir",
+			"--absolute-git-dir",
+		]),
 		git(cwd, ["remote", "-v"]),
 		validBranch(cwd, base),
 	]);
-	const root = await realpath(top);
+	const [top, rawCommonDir, gitDir, ...extra] = dirs.split("\n");
+	if (!top || !rawCommonDir || !gitDir || extra.length)
+		fail("GIT_PARSE", "Could not read the repository's folders from Git.");
+	const [root, commonDir] = await Promise.all([
+		realpath(top),
+		realpath(rawCommonDir),
+	]);
 	const urls = new Map<string, string>();
 	for (const line of listing.split("\n")) {
 		const match = /^(\S+)\t(.*) \(fetch\)$/.exec(line);
@@ -79,28 +104,23 @@ export async function registerWorkspace(input: {
 		);
 	const repository = repositoryIdentity(urls.get(remote) ?? "", root);
 	return {
-		name: input.name,
-		path: root,
-		group: input.group,
-		repository,
-		remote,
-		base,
+		workspace: {
+			name: input.name,
+			path: root,
+			group: input.group,
+			repository,
+			remote,
+			base,
+		},
+		commonDir,
+		gitDir,
 	};
 }
 
-/** The shared .git directory; linked worktrees of one clone have the same one. */
-export async function commonDirOf(path: string): Promise<string> {
-	return realpath(
-		await git(path, [
-			"rev-parse",
-			"--path-format=absolute",
-			"--git-common-dir",
-		]),
-	);
-}
-
-export async function assertIdentity(workspace: Workspace): Promise<void> {
-	const actual = await registerWorkspace(workspace);
+async function checkIdentity(
+	workspace: Workspace,
+): Promise<{ commonDir: string; gitDir: string }> {
+	const { workspace: actual, commonDir, gitDir } = await identify(workspace);
 	if (
 		actual.path !== workspace.path ||
 		actual.repository !== workspace.repository
@@ -110,20 +130,90 @@ export async function assertIdentity(workspace: Workspace): Promise<void> {
 			"Workspace path or remote identity changed. Register it again before syncing.",
 		);
 	}
+	return { commonDir, gitDir };
 }
 
-async function counts(
-	path: string,
-	left: string,
-	right: string,
-): Promise<[number, number]> {
-	const result = await git(path, [
-		"rev-list",
-		"--left-right",
-		"--count",
-		`${left}...${right}`,
-		"--",
-	]);
+/** Confirms the folder is still the registered repository; returns its shared .git dir. */
+export async function assertIdentity(workspace: Workspace): Promise<string> {
+	return (await checkIdentity(workspace)).commonDir;
+}
+
+// Read-only status views (opt in with reuseIdentity) reuse a passed identity check while
+// nothing it depends on changed: the .git entry is the same one (not a replaced folder),
+// and the repository's and the user's Git config files (remote URLs, insteadOf rewrites)
+// are untouched. Anything that changes a branch or a file always checks in full.
+const IDENTITY_TTL = 5 * 60_000;
+const identities = new Map<
+	string,
+	{
+		key: string | null;
+		at: number;
+		dirs: { commonDir: string; gitDir: string };
+	}
+>();
+const missing = { ino: -1n, mtimeNs: -1n, size: -1n };
+async function fingerprint(
+	workspace: Workspace,
+	dirs: { commonDir: string; gitDir: string },
+): Promise<string | null> {
+	const home = homedir();
+	const xdg = process.env.XDG_CONFIG_HOME || join(home, ".config");
+	try {
+		const dotGit = await stat(join(workspace.path, ".git"), { bigint: true });
+		// Without a real file id a replaced .git folder could look the same: never cache.
+		if (dotGit.ino === 0n) return null;
+		const files = await Promise.all(
+			[
+				join(dirs.commonDir, "config"),
+				join(dirs.gitDir, "config.worktree"),
+				join(home, ".gitconfig"),
+				join(xdg, "git", "config"),
+			].map((file) => stat(file, { bigint: true }).catch(() => missing)),
+		);
+		return JSON.stringify([
+			workspace,
+			String(dotGit.ino),
+			dotGit.isFile() ? String(dotGit.mtimeNs) : "",
+			...files.map((file) => [
+				String(file.ino),
+				String(file.mtimeNs),
+				String(file.size),
+			]),
+		]);
+	} catch {
+		return null;
+	}
+}
+async function cachedIdentity(
+	workspace: Workspace,
+): Promise<{ commonDir: string; gitDir: string }> {
+	const known = identities.get(workspace.path);
+	// Taken before the check, so a config change during the check is never stamped valid.
+	const before = known ? await fingerprint(workspace, known.dirs) : null;
+	if (
+		known?.key &&
+		before === known.key &&
+		Date.now() - known.at < IDENTITY_TTL
+	)
+		return known.dirs;
+	const dirs = await checkIdentity(workspace);
+	const same =
+		known?.dirs.commonDir === dirs.commonDir &&
+		known.dirs.gitDir === dirs.gitDir;
+	// The first check only learns where the config lives; the next one can be cached.
+	identities.set(workspace.path, {
+		key: same ? before : null,
+		at: Date.now(),
+		dirs,
+	});
+	return dirs;
+}
+
+// Ahead/behind between two commits does not change while the history is complete, so it is
+// computed once per pair and clone. A shallow clone can gain history, so it is not cached.
+const countCache = new Map<string, [number, number]>();
+
+function counts(result: string): [number, number] {
 	const [ahead, behind] = result.split(/\s+/).map(Number);
 	if (
 		ahead == null ||
@@ -135,60 +225,98 @@ async function counts(
 	return [ahead, behind];
 }
 
+/**
+ * Reads a workspace's state. `reuseIdentity` lets a read-only status view reuse a recent
+ * identity check (see above); callers that go on to change anything must leave it off.
+ */
 export async function inspectWorkspace(
 	workspace: Workspace,
+	{ reuseIdentity = false }: { reuseIdentity?: boolean } = {},
 ): Promise<WorkspaceStatus> {
-	await assertIdentity(workspace);
 	const path = workspace.path;
 	const baseRef = `refs/remotes/${workspace.remote}/${workspace.base}`;
-	const [dirs, status, subject, rows, baseHead] = await Promise.all([
-		// One process for: common dir, this worktree's git dir, HEAD and its branch.
-		git(path, [
-			"rev-parse",
-			"--path-format=absolute",
-			"--git-common-dir",
-			"--absolute-git-dir",
-			"HEAD",
-			"--symbolic-full-name",
-			"HEAD",
-		]),
+	// Two Git processes cover the state below; each one costs real time on Windows. Both
+	// are read-only, so they run alongside the identity check, whose error wins.
+	const identity = reuseIdentity
+		? cachedIdentity(workspace)
+		: checkIdentity(workspace);
+	const reads = Promise.all([
+		// HEAD's commit and whether anything is uncommitted.
 		git(path, [
 			"status",
-			"--porcelain=v1",
+			"--porcelain=v2",
+			"--branch",
 			"--untracked-files=normal",
 			"--ignore-submodules=none",
 		]),
-		// "--": a file named HEAD in the worktree must not make the revision ambiguous.
-		git(path, ["log", "-1", "--no-color", "--format=%s", "HEAD", "--"]),
+		// Every local branch with its tip, upstream counts and subject, plus the remote base.
 		// upstream:track gives each branch's ahead/behind without a process per branch.
 		git(path, [
 			"for-each-ref",
-			"--format=%(refname:short)%00%(upstream)%00%(HEAD)%00%(upstream:track,nobracket)",
+			"--format=%(refname)%00%(objectname)%00%(upstream)%00%(HEAD)%00%(upstream:track,nobracket)%00%(contents:subject)",
 			"refs/heads/",
+			baseRef,
 		]),
-		git(path, ["rev-parse", "--verify", "--quiet", baseRef]).catch(() => null),
 	]);
-	const [rawCommonDir, gitDir, head, symbolic] = dirs.split("\n");
-	if (!rawCommonDir || !gitDir || !head || symbolic == null)
+	reads.catch(() => {}); // Reported through the identity check, or awaited below.
+	const { commonDir, gitDir } = await identity;
+	const [status, refs] = await reads;
+	let head: string | undefined;
+	let dirty = false;
+	for (const line of status.split("\n")) {
+		if (line.startsWith("# branch.oid ")) head = line.slice(13);
+		else if (line && !line.startsWith("# ")) dirty = true;
+	}
+	if (!head || !/^[0-9a-f]{40,64}$/.test(head))
 		fail("GIT_PARSE", "Could not read Git state.");
-	const branch = symbolic.startsWith("refs/heads/") ? symbolic.slice(11) : null;
-	const [commonDir, operation, [baseAhead, baseBehind], operations] =
-		await Promise.all([
-			realpath(rawCommonDir),
-			Promise.all(
-				[
-					"MERGE_HEAD",
-					"CHERRY_PICK_HEAD",
-					"REVERT_HEAD",
-					"rebase-merge",
-					"rebase-apply",
-					"sequencer",
-					"BISECT_LOG",
-				].map((marker) => exists(join(gitDir, marker))),
-			).then((found) => found.some(Boolean)),
-			baseHead == null ? ([null, null] as const) : counts(path, head, baseHead),
-			readOperations(rawCommonDir),
-		]);
+	const rows = refs
+		.split("\n")
+		.filter(Boolean)
+		.map((row) => row.split("\0"));
+	const baseHead = rows.find(([ref]) => ref === baseRef)?.[1] ?? null;
+	const current = rows.find(
+		([ref, , , marker]) => ref?.startsWith("refs/heads/") && marker === "*",
+	);
+	const branch = current?.[0]?.slice(11) ?? null;
+	const tip = head;
+	const [subject, [baseAhead, baseBehind]] = await Promise.all([
+		// A detached HEAD (or a branch that moved between the two reads) needs its own read.
+		current?.[1] === tip
+			? (current[5] ?? "")
+			: git(path, ["log", "-1", "--no-color", "--format=%s", tip, "--"]),
+		(async () => {
+			if (baseHead == null) return [null, null] as const;
+			const range = `${tip}...${baseHead}`;
+			const key = `${commonDir}\n${range}`;
+			const known = countCache.get(key);
+			if (known) return known;
+			const [result, shallow] = await Promise.all([
+				git(path, ["rev-list", "--left-right", "--count", range, "--"]).then(
+					counts,
+				),
+				exists(join(commonDir, "shallow")),
+			]);
+			if (!shallow) {
+				if (countCache.size > 1000) countCache.clear();
+				countCache.set(key, result);
+			}
+			return result;
+		})(),
+	]);
+	const [operation, operations] = await Promise.all([
+		Promise.all(
+			[
+				"MERGE_HEAD",
+				"CHERRY_PICK_HEAD",
+				"REVERT_HEAD",
+				"rebase-merge",
+				"rebase-apply",
+				"sequencer",
+				"BISECT_LOG",
+			].map((marker) => exists(join(gitDir, marker))),
+		).then((found) => found.some(Boolean)),
+		readOperations(commonDir),
+	]);
 	// Moves this workspace started but never finished: the process stopped midway.
 	// A later successful move of the same branch (from any worktree of this clone) means the
 	// branch is in a known state again, so the warning clears.
@@ -204,22 +332,21 @@ export async function inspectWorkspace(
 		if (item.state === "done") moved.add(item.ref);
 	}
 	const branches: BranchInfo[] = [];
-	for (const row of rows.split("\n").filter(Boolean)) {
-		const [name, upstream, current, track = ""] = row.split("\0");
-		if (!name) continue;
+	for (const [ref, , upstream, marker, track = ""] of rows) {
+		if (!ref?.startsWith("refs/heads/")) continue;
+		const name = ref.slice(11);
 		// "gone" means the upstream is configured but its ref no longer exists.
 		const tracked = Boolean(upstream) && track !== "gone";
 		const count = (word: string) =>
 			Number(new RegExp(`${word} (\\d+)`).exec(track)?.[1] ?? 0);
 		branches.push({
 			name,
-			current: current === "*",
+			current: marker === "*",
 			upstream: upstream || null,
 			ahead: tracked ? count("ahead") : null,
 			behind: tracked ? count("behind") : null,
 		});
 	}
-	const dirty = Boolean(status);
 	return {
 		workspace,
 		commonDir,

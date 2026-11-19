@@ -10,7 +10,9 @@ const config = flag
 	: join(homedir(), ".config", "clonelane", "registry.json");
 
 const handlers = {
-	...createHandlers(config),
+	...createHandlers(config, {
+		statusCache: join(app.getPath("userData"), "status-cache.json"),
+	}),
 	pickFolder: async () => {
 		const picked = await dialog.showOpenDialog({
 			properties: ["openDirectory"],

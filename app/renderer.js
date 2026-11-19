@@ -149,7 +149,7 @@ function gate() {
 				? `Updates ${plural(count, "workspace")}.`
 				: blocked
 					? "Nothing can be updated yet. Resolve what needs attention, then preview again."
-					: "Nothing to update. Preview does not fetch: click Fetch, then preview again.";
+					: "Nothing to update. Preview does not fetch: click Fetch remote, then preview again.";
 	}
 
 	const plan = view.env;
@@ -259,7 +259,7 @@ function render() {
 			el(
 				"p",
 				{ className: "empty" },
-				"Could not read the workspaces. Refresh to try again.",
+				"Could not read the workspaces. Click Reload local to try again.",
 			),
 		);
 	else list.replaceChildren(...(view.statuses ?? []).map(renderWorkspace));
@@ -288,18 +288,31 @@ async function refresh() {
 		$("#register-panel").open = true;
 		return;
 	}
-	// First load shows card-shaped placeholders; later refreshes keep the old cards up.
-	view.loading = registry.workspaces.filter(
-		(item) => !group() || item.group === group(),
-	).length;
+	// First load shows the last known state (controls stay disabled until it is fresh), or
+	// card-shaped placeholders; later refreshes keep the old cards up.
+	const first = !view.statuses;
+	const saved = first
+		? await window.clonelane.call("cachedStatus", { group: group() })
+		: null;
+	if (saved?.ok && saved.data) view.statuses = saved.data.statuses;
+	else if (first)
+		view.loading = registry.workspaces.filter(
+			(item) => !group() || item.group === group(),
+		).length;
 	render();
 	const statuses = await call(
 		"status",
 		{ group: group() },
-		{ busy: "Reading workspaces…" },
+		{
+			busy: saved?.data
+				? `Showing the last known state (${ago(saved.data.at)}). Reading workspaces…`
+				: "Reading workspaces…",
+		},
 	);
 	view.loading = 0;
 	if (statuses) view.statuses = statuses;
+	// The last known state was only a stand-in: never leave it up as if it were current.
+	else if (saved?.data) view.statuses = null;
 	render();
 }
 
@@ -891,7 +904,7 @@ $("#fetch").addEventListener("click", async () => {
 	const fetched = await call(
 		"fetch",
 		{ group: group() },
-		{ busy: "Fetching from remotes…" },
+		{ busy: "Fetching from the remote…" },
 	);
 	if (!fetched) return;
 	// Remote refs moved, so an earlier sync preview no longer holds.
@@ -907,7 +920,12 @@ $("#fetch").addEventListener("click", async () => {
 			message: `Fetched ${fetched.length - failed.length} of ${plural(fetched.length, "workspace")}. ${failed.map((item) => `${item.name}: ${item.message}`).join(" · ")}`,
 			code: [...new Set(failed.map((item) => item.error))].join(", "),
 		});
-	else say(`Fetched ${plural(fetched.length, "workspace")}.`);
+	else {
+		const copied = fetched.filter((item) => item.source).length;
+		say(
+			`Fetched ${plural(fetched.length, "workspace")}${copied ? ` (${copied} copied from another clone on this computer)` : ""}.`,
+		);
+	}
 });
 
 $("#browse").addEventListener("click", async () => {
