@@ -97,13 +97,73 @@ export async function git(path: string, args: string[]): Promise<string> {
 			},
 		);
 		return stdout.trimEnd();
-	} catch {
-		// Child stdout/stderr may contain remote passwords, file contents or tokens.
-		fail(
-			"GIT_FAILED",
-			"Git operation failed. Inspect the workspace with Git; command output was suppressed.",
-		);
+	} catch (error) {
+		const failure = error as {
+			killed?: boolean;
+			code?: unknown;
+			stderr?: unknown;
+		};
+		if (failure.killed)
+			fail(
+				"GIT_TIMEOUT",
+				"Git did not finish within 60 seconds. Check the network, or run the same step with Git directly.",
+			);
+		// Git is launched by absolute path, so ENOENT here means the working folder is gone.
+		if (failure.code === "ENOENT")
+			fail("GIT_NO_FOLDER", "The workspace folder does not exist any more.");
+		const [code, message] = describeGitFailure(String(failure.stderr ?? ""));
+		fail(code, message);
 	}
+}
+
+// Git's output can carry credentials, URLs or file contents, so it is never shown. It is
+// only matched against known failure kinds to tell the user what to do next.
+const failures: [RegExp, string, string][] = [
+	[
+		/could not read (username|password)|authentication failed|permission denied \(publickey|terminal prompts disabled|access denied|returned error: 40[13]|http 40[13]/i,
+		"GIT_AUTH",
+		"The remote rejected the credentials. Check that this account can fetch the repository with Git.",
+	],
+	[
+		/could not resolve host(name)?|connection timed out|failed to connect|connection refused|network is unreachable|operation timed out|ssl certificate problem/i,
+		"GIT_NETWORK",
+		"Could not reach the remote. Check the network connection, VPN or proxy.",
+	],
+	[
+		/couldn't find remote ref/i,
+		"GIT_REMOTE_REF",
+		"The base branch does not exist on the remote. Check the base branch name.",
+	],
+	[
+		/repository not found|does not appear to be a git repository/i,
+		"GIT_REMOTE_MISSING",
+		"The remote repository was not found. Check the remote URL and access rights.",
+	],
+	[
+		/\.lock'?: file exists|unable to create '[^']*\.lock'|another git process/i,
+		"GIT_LOCKED",
+		"Another Git process is working in this repository (a .lock file exists). Wait for it to finish, or remove the stale lock file.",
+	],
+	[
+		/not a git repository/i,
+		"GIT_NOT_REPO",
+		"This folder is not a Git repository any more.",
+	],
+	[
+		/would be overwritten/i,
+		"GIT_LOCAL_CHANGES",
+		"Local files would be overwritten. Commit or move them first.",
+	],
+	[/conflict/i, "GIT_CONFLICT", "Git stopped on a conflict."],
+];
+
+export function describeGitFailure(output: string): [string, string] {
+	for (const [pattern, code, message] of failures)
+		if (pattern.test(output)) return [code, message];
+	return [
+		"GIT_FAILED",
+		"Git operation failed. Inspect the workspace with Git; command output was suppressed.",
+	];
 }
 
 export async function gitSucceeds(

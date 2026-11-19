@@ -54,8 +54,26 @@ export interface SyncResult extends SyncPlan {
 	result: "planned" | "skipped" | "updated" | "unchanged" | "failed";
 	backup?: string;
 	error?: string;
+	/** A fixed, human-readable next step for a failure; never Git's own output. */
+	message?: string;
 	baseUpdate?: BaseUpdate;
 }
+
+export interface FetchResult {
+	name: string;
+	result: "fetched" | "failed";
+	error?: string;
+	message?: string;
+}
+
+const failure = (error: unknown) =>
+	error instanceof ClonelaneError
+		? { error: error.code, message: error.message }
+		: {
+				error: "IO_ERROR",
+				message:
+					"A local file operation failed. Check that the folder is accessible.",
+			};
 
 export interface BaseUpdate {
 	action: "skip" | "up-to-date" | "fast-forward";
@@ -207,17 +225,37 @@ async function syncBaseRef(
 	};
 }
 
-// dryRun is read-only: it deliberately does NOT fetch. Refresh explicitly first.
+// dryRun is read-only: it deliberately does NOT fetch. With `fetch`, a real sync fetches
+// first and skips only the workspaces whose fetch failed.
 export async function syncWorkspaces(
 	workspaces: Workspace[],
-	options: { dryRun?: boolean; rebase?: boolean } = {},
+	options: { dryRun?: boolean; rebase?: boolean; fetch?: boolean } = {},
 ): Promise<SyncResult[]> {
 	// A preview only reads, so workspaces are inspected side by side.
 	if (options.dryRun)
 		return Promise.all(workspaces.map((item) => syncOne(item, options)));
+	const fetched = options.fetch ? await fetchWorkspaces(workspaces) : [];
 	const results: SyncResult[] = [];
-	for (const workspace of workspaces)
-		results.push(await syncOne(workspace, options));
+	for (const workspace of workspaces) {
+		const fetchFailure = fetched.find(
+			(item) => item.name === workspace.name && item.result === "failed",
+		);
+		results.push(
+			fetchFailure
+				? {
+						name: workspace.name,
+						action: "skip",
+						reason: "fetch-failed",
+						head: "",
+						baseHead: null,
+						branch: null,
+						result: "failed",
+						error: fetchFailure.error,
+						message: fetchFailure.message,
+					}
+				: await syncOne(workspace, options),
+		);
+	}
 	return results;
 }
 
@@ -286,18 +324,28 @@ async function syncOne(
 							state.baseHead ?? "",
 						]);
 					return { ...plan, result: "updated", backup };
-				} catch {
-					let error = "git-failed-inspect-workspace";
-					if (plan.action === "rebase") {
-						const aborted = await gitSucceeds(workspace.path, [
-							"rebase",
-							"--abort",
-						]);
-						error = aborted
-							? "rebase-failed-restored"
-							: "rebase-failed-manual-recovery-required";
-					}
-					return { ...plan, result: "failed", backup, error };
+				} catch (error) {
+					if (plan.action !== "rebase")
+						return { ...plan, result: "failed", backup, ...failure(error) };
+					const aborted = await gitSucceeds(workspace.path, [
+						"rebase",
+						"--abort",
+					]);
+					return {
+						...plan,
+						result: "failed",
+						backup,
+						...(aborted
+							? {
+									error: "rebase-failed-restored",
+									message:
+										"The rebase stopped, usually on a conflict, and was undone: the branch is as it was. Rebase it by hand to resolve the conflict.",
+								}
+							: {
+									error: "rebase-failed-manual-recovery-required",
+									message: `The rebase stopped and could not be undone automatically. Run "git rebase --abort" in this workspace; the previous branch tip is kept at ${backup}.`,
+								}),
+					};
 				}
 			},
 		);
@@ -311,37 +359,65 @@ async function syncOne(
 			baseHead: null,
 			branch: null,
 			result: "failed",
-			error: error instanceof ClonelaneError ? error.code : "IO_ERROR",
+			...failure(error),
 		};
 	}
 }
 
 // Linked worktrees share one object store and one lock: their fetches run one after
-// another under it. Separate clones run side by side.
-export async function fetchWorkspaces(workspaces: Workspace[]): Promise<void> {
-	const clones = new Map<string, Map<string, Workspace>>();
+// another under it. Separate clones run side by side. A failure is reported for the
+// workspaces it affects; the others are still fetched.
+export async function fetchWorkspaces(
+	workspaces: Workspace[],
+): Promise<FetchResult[]> {
+	const results = new Map<string, FetchResult>();
+	const record = (members: Workspace[], outcome: Omit<FetchResult, "name">) => {
+		for (const member of members)
+			results.set(member.name, { name: member.name, ...outcome });
+	};
+	// commonDir -> (remote + base) -> workspaces sharing that one fetch
+	const clones = new Map<string, Map<string, Workspace[]>>();
 	await Promise.all(
 		workspaces.map(async (workspace) => {
-			await assertIdentity(workspace);
-			const commonDir = await commonDirOf(workspace.path);
-			const targets = clones.get(commonDir) ?? new Map();
-			clones.set(commonDir, targets);
-			const key = `${workspace.remote}\0${workspace.base}`;
-			if (!targets.has(key)) targets.set(key, workspace);
+			try {
+				await assertIdentity(workspace);
+				const commonDir = await commonDirOf(workspace.path);
+				const targets = clones.get(commonDir) ?? new Map();
+				clones.set(commonDir, targets);
+				const key = `${workspace.remote}\0${workspace.base}`;
+				targets.set(key, [...(targets.get(key) ?? []), workspace]);
+			} catch (error) {
+				record([workspace], { result: "failed", ...failure(error) });
+			}
 		}),
 	);
 	await Promise.all(
 		[...clones].map(([commonDir, targets]) =>
 			withLock(join(commonDir, "clonelane.lock"), async () => {
-				for (const workspace of targets.values())
-					await git(workspace.path, [
-						"fetch",
-						"--no-tags",
-						"--no-recurse-submodules",
-						workspace.remote,
-						`refs/heads/${workspace.base}:refs/remotes/${workspace.remote}/${workspace.base}`,
-					]);
-			}),
+				for (const members of targets.values()) {
+					const [workspace] = members as [Workspace];
+					try {
+						await git(workspace.path, [
+							"fetch",
+							"--no-tags",
+							"--no-recurse-submodules",
+							workspace.remote,
+							`refs/heads/${workspace.base}:refs/remotes/${workspace.remote}/${workspace.base}`,
+						]);
+						record(members, { result: "fetched" });
+					} catch (error) {
+						record(members, { result: "failed", ...failure(error) });
+					}
+				}
+			}).catch((error) =>
+				record([...targets.values()].flat(), {
+					result: "failed",
+					...failure(error),
+				}),
+			),
 		),
+	);
+	return workspaces.map(
+		(workspace) => results.get(workspace.name) as FetchResult,
 	);
 }

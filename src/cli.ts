@@ -140,23 +140,45 @@ async function main(): Promise<void> {
 		fail("USAGE", "Unexpected positional argument.");
 	const selected = selectWorkspaces(registry, values.group);
 	if (command === "status") {
-		const statuses = [];
-		for (const workspace of selected)
-			statuses.push(await inspectWorkspace(workspace));
+		// One unreadable workspace must not hide the others.
+		const statuses = await Promise.all(
+			selected.map((workspace) =>
+				inspectWorkspace(workspace).catch((error: unknown) => ({
+					workspace,
+					error:
+						error instanceof ClonelaneError
+							? { code: error.code, message: error.message }
+							: { code: "IO_ERROR", message: "Could not read this workspace." },
+				})),
+			),
+		);
+		if (statuses.some((state) => "error" in state)) process.exitCode = 1;
 		if (values.json) print(statuses);
 		else {
 			console.table(
-				statuses.map((state) => ({
-					name: state.workspace.name,
-					path: state.workspace.path,
-					branch: state.branch ?? "(detached)",
-					dirty: state.dirty,
-					operation: state.operation,
-					"ahead of base": state.baseAhead,
-					"behind base": state.baseBehind,
-				})),
+				statuses.map((state) =>
+					"error" in state
+						? {
+								name: state.workspace.name,
+								path: state.workspace.path,
+								error: state.error.code,
+							}
+						: {
+								name: state.workspace.name,
+								path: state.workspace.path,
+								branch: state.branch ?? "(detached)",
+								dirty: state.dirty,
+								operation: state.operation,
+								"ahead of base": state.baseAhead,
+								"behind base": state.baseBehind,
+							},
+				),
 			);
 			for (const state of statuses) {
+				if ("error" in state) {
+					console.log(`\n${state.workspace.name}: ${state.error.message}`);
+					continue;
+				}
 				console.log(`\n${state.workspace.name}: local branches`);
 				console.table(state.branches);
 			}
@@ -165,15 +187,17 @@ async function main(): Promise<void> {
 		return;
 	}
 	if (command === "fetch") {
-		await fetchWorkspaces(selected);
-		print({ fetched: selected.map((item) => item.name) });
+		const results = await fetchWorkspaces(selected);
+		print(results);
+		if (results.some((result) => result.result === "failed"))
+			process.exitCode = 1;
 		return;
 	}
 	if (command === "sync") {
-		if (!values["dry-run"]) await fetchWorkspaces(selected);
 		const results = await syncWorkspaces(selected, {
 			dryRun: values["dry-run"],
 			rebase: values.rebase,
+			fetch: !values["dry-run"],
 		});
 		print(results);
 		if (results.some((result) => result.result === "failed"))

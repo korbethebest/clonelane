@@ -18,6 +18,7 @@ export const reasons = {
 	"rebase-not-enabled": "rebase is off",
 	"uncommitted-changes": "uncommitted changes",
 	"unrelated-histories": "unrelated histories",
+	"fetch-failed": "fetching the base branch failed",
 	"local-files-in-the-way":
 		"the update adds files that already exist locally (for example an ignored .env); move them aside first",
 	"unused-local-base": "unused local base",

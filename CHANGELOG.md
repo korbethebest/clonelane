@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/). Until 1.0, minor versions may change the CLI and library API.
 
+## [Unreleased]
+
+### Changed
+
+- Failures say what went wrong and what to do next. Git's output is still never shown; it is matched to known kinds such as rejected credentials, an unreachable remote, a missing base branch or a stale `.lock` file, each with a fixed message.
+- `fetch` reports each workspace separately, and one failure no longer stops the others. A real `sync` skips only the workspaces whose fetch failed (`fetch-failed`).
+- `status` in the CLI shows an unreadable workspace (for example a deleted folder) and still lists the others.
+- `fetch`, `sync` and `status` exit with code 1 when any workspace failed. `fetch` now prints a result per workspace instead of a list of names.
+- The desktop app names the workspaces whose fetch failed, and sync failures show a sentence instead of a code.
+
 ## [0.1.0] - 2026-11-19
 
 First public release.

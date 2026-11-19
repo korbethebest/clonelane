@@ -106,20 +106,14 @@ export function createHandlers(config) {
 			await removeWorkspace(config, String(input.name ?? ""));
 			return String(input.name);
 		},
-		fetch: async ({ group }) => {
-			const selected = await pick(group);
-			await fetchWorkspaces(selected);
-			return selected.map((item) => item.name);
-		},
-		sync: async ({ group, dryRun, rebase }) => {
-			const selected = await pick(group);
+		fetch: async ({ group }) => fetchWorkspaces(await pick(group)),
+		sync: async ({ group, dryRun, rebase }) =>
 			// Same contract as the CLI: a real sync fetches first, a preview never does.
-			if (dryRun !== true) await fetchWorkspaces(selected);
-			return syncWorkspaces(selected, {
+			syncWorkspaces(await pick(group), {
 				dryRun: dryRun === true,
 				rebase: rebase === true,
-			});
-		},
+				fetch: dryRun !== true,
+			}),
 		envPlan: (input) => env(input, false),
 		envApply: (input) => env(input, true),
 	};

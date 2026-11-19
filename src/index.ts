@@ -9,7 +9,12 @@ export {
 	selectWorkspaces,
 	updateWorkspace,
 } from "./registry.ts";
-export type { BaseUpdate, SyncPlan, SyncResult } from "./sync.ts";
+export type {
+	BaseUpdate,
+	FetchResult,
+	SyncPlan,
+	SyncResult,
+} from "./sync.ts";
 export { fetchWorkspaces, planSync, syncWorkspaces } from "./sync.ts";
 export type {
 	BranchInfo,
