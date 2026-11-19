@@ -5,6 +5,7 @@ import { fail } from "./errors.ts";
 import { withLock } from "./files.ts";
 import { git } from "./git.ts";
 import { begin, finish, type Operation, readOperations } from "./journal.ts";
+import { busyElsewhere } from "./sync.ts";
 import {
 	assertIdentity,
 	commonDirOf,
@@ -117,7 +118,8 @@ export async function restoreOperation(
 		const worktrees = await git(path, ["worktree", "list", "--porcelain"]);
 		if (
 			!checkedOutHere &&
-			worktrees.split("\n").includes(`branch ${operation.ref}`)
+			(worktrees.split("\n").includes(`branch ${operation.ref}`) ||
+				(await busyElsewhere(state.commonDir, operation.ref)))
 		)
 			return refuse(
 				"checked-out-elsewhere",
@@ -136,6 +138,14 @@ export async function restoreOperation(
 			to: operation.from,
 			backup,
 		});
+		// Another tool may have committed since the checks above; never drop that commit.
+		if ((await read(operation.ref)) !== current) {
+			await finish(state.commonDir, restoreId, "failed");
+			return refuse(
+				"moved-since",
+				"The branch moved while restoring. Nothing was changed.",
+			);
+		}
 		try {
 			// --keep refuses to drop local changes; update-ref moves only if the tip is unchanged.
 			if (checkedOutHere) await git(path, ["reset", "--keep", operation.from]);

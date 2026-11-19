@@ -80,6 +80,37 @@ export async function finish(
 	}).catch(() => {});
 }
 
+const fields = [
+	"time",
+	"workspace",
+	"path",
+	"kind",
+	"ref",
+	"from",
+	"to",
+	"backup",
+];
+// A damaged line missing a field is skipped like a torn one, so readers can trust the shape.
+const complete = (record: Partial<Operation>) =>
+	fields.every((field) => typeof record[field as keyof Operation] === "string");
+
+// A lock left by a killed process must not hide its interrupted move: check the holder's pid.
+async function lockHeld(commonDir: string): Promise<boolean> {
+	const text = await readOptional(join(commonDir, "clonelane.lock")).catch(
+		() => "",
+	);
+	if (text == null) return false;
+	const pid = Number(text.trim());
+	// Empty while the holder is still writing it: treat as held.
+	if (!Number.isInteger(pid) || pid <= 0) return true;
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
 /**
  * All recorded moves of a clone, newest first. Pass `holdingLock` when the caller holds the
  * clone's lock itself, so a leftover "started" entry still reads as interrupted.
@@ -100,12 +131,11 @@ export async function readOperations(
 		}
 		if (typeof record.id !== "string") continue;
 		const known = operations.get(record.id);
-		if (record.state === "started" && !known)
+		if (record.state === "started" && !known && complete(record))
 			operations.set(record.id, record as Operation);
 		else if (known) Object.assign(known, record);
 	}
-	const running =
-		!holdingLock && (await exists(join(commonDir, "clonelane.lock")));
+	const running = !holdingLock && (await lockHeld(commonDir));
 	return [...operations.values()]
 		.map((operation) =>
 			operation.state === "started" && !running

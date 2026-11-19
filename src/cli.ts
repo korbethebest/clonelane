@@ -151,14 +151,17 @@ async function main(): Promise<void> {
 			);
 		const id = argument as string;
 		// The journal is per clone, so find the workspace that recorded this id.
-		let owner: (typeof registry.workspaces)[number] | undefined;
+		const owners: (typeof registry.workspaces)[number][] = [];
 		for (const workspace of selectWorkspaces(registry, values.group)) {
 			const operations = await listOperations(workspace).catch(() => []);
-			if (operations.some((item) => item.id === id)) {
-				owner = workspace;
-				break;
-			}
+			if (operations.some((item) => item.id === id)) owners.push(workspace);
 		}
+		if (owners.length > 1)
+			fail(
+				"AMBIGUOUS",
+				`Operation ${id} exists in several workspaces. Narrow it with --group.`,
+			);
+		const owner = owners[0];
 		if (!owner)
 			fail(
 				"NOT_FOUND",

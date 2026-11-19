@@ -904,6 +904,21 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 			{ flag: "a" },
 		);
 		assert.equal((await listOperations(f.a)).length, 1);
+		// A lock left by a killed process (dead pid) does not hide the interruption.
+		await writeFile(join(state.commonDir, "clonelane.lock"), "2147483646\n");
+		assert.equal((await listOperations(f.a))[0]?.state, "interrupted");
+		// A damaged started record is skipped rather than breaking readers.
+		await writeFile(
+			join(state.commonDir, "clonelane-journal.jsonl"),
+			'\n{"id":"0badf00d","state":"started"}\n',
+			{ flag: "a" },
+		);
+		assert.equal((await listOperations(f.a)).length, 1);
+		// A later move of the same branch clears the warning.
+		await rm(join(state.commonDir, "clonelane.lock"));
+		await f.publish();
+		await syncWorkspaces([f.a], { fetch: true });
+		assert.equal((await inspectWorkspace(f.a)).interrupted, 0);
 	});
 
 	test("CLI history lists moves and restore --dry-run plans without moving", async (t) => {

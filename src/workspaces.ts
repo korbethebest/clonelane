@@ -190,9 +190,14 @@ export async function inspectWorkspace(
 			readOperations(rawCommonDir),
 		]);
 	// Moves this workspace started but never finished: the process stopped midway.
-	const interrupted = operations.filter(
-		(item) => item.path === workspace.path && item.state === "interrupted",
-	).length;
+	// A later move of the same branch means the user has moved on, so the warning clears.
+	const moved = new Set<string>();
+	let interrupted = 0;
+	for (const item of operations) {
+		if (item.path !== workspace.path) continue;
+		if (item.state === "interrupted" && !moved.has(item.ref)) interrupted++;
+		moved.add(item.ref);
+	}
 	const branches: BranchInfo[] = [];
 	for (const row of rows.split("\n").filter(Boolean)) {
 		const [name, upstream, current, track = ""] = row.split("\0");

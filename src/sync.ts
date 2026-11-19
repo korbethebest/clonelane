@@ -145,7 +145,10 @@ async function checkedPlan(
 
 // A rebase or bisect detaches HEAD, so `worktree list` stops naming the branch it works
 // on; the operation's own state files still do, in the main and every linked git dir.
-async function busyElsewhere(commonDir: string, ref: string): Promise<boolean> {
+export async function busyElsewhere(
+	commonDir: string,
+	ref: string,
+): Promise<boolean> {
 	const linked = await readdir(join(commonDir, "worktrees")).catch(() => []);
 	const dirs = [
 		commonDir,
