@@ -7,6 +7,7 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Added
 
 - Faster `fetch`: separate clones of one repository contact the remote once. The other clones copy the fresh base from that clone on disk (no network, no credential helper) and fall back to their own remote if that fails. `FetchResult.source` names the clone a copy came from. Checking a workspace before a fetch also starts one Git process fewer.
+- Faster `status`: reading a workspace starts two Git processes instead of six. Repeated reads in one process reuse the identity check while the `.git` entry and `.git/config` are unchanged (at most five minutes), and ahead/behind counts are cached per commit pair. Anything that moves a branch still checks in full. The desktop app shows the last known state at start while it reads the current one, with its controls disabled until then.
 - A recovery journal. Every branch move `sync` makes is recorded with its backup ref and outcome in the clone's `.git` directory. `clonelane history` lists them, and `clonelane restore <id> [--dry-run]` moves a branch back to its backup when nothing has changed since; otherwise it refuses with a reason. Restores are backed up and journaled too.
 - `status`, the desktop app and the library (`WorkspaceStatus.interrupted`) flag moves that started but never finished. The library exports `listOperations()` and `restoreOperation()`.
 

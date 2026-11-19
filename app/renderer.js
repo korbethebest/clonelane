@@ -288,15 +288,26 @@ async function refresh() {
 		$("#register-panel").open = true;
 		return;
 	}
-	// First load shows card-shaped placeholders; later refreshes keep the old cards up.
-	view.loading = registry.workspaces.filter(
-		(item) => !group() || item.group === group(),
-	).length;
+	// First load shows the last known state (controls stay disabled until it is fresh), or
+	// card-shaped placeholders; later refreshes keep the old cards up.
+	const first = !view.statuses;
+	const saved = first
+		? await window.clonelane.call("cachedStatus", { group: group() })
+		: null;
+	if (saved?.ok && saved.data) view.statuses = saved.data.statuses;
+	else if (first)
+		view.loading = registry.workspaces.filter(
+			(item) => !group() || item.group === group(),
+		).length;
 	render();
 	const statuses = await call(
 		"status",
 		{ group: group() },
-		{ busy: "Reading workspaces…" },
+		{
+			busy: saved?.data
+				? `Showing the last known state (${ago(saved.data.at)}). Reading workspaces…`
+				: "Reading workspaces…",
+		},
 	);
 	view.loading = 0;
 	if (statuses) view.statuses = statuses;

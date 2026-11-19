@@ -1,4 +1,4 @@
-import { readdir, stat } from "node:fs/promises";
+import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
@@ -41,7 +41,7 @@ async function lastFetch(commonDir) {
 }
 
 // Electron-free so the app's actions can be exercised with plain Node.
-export function createHandlers(config) {
+export function createHandlers(config, { statusCache } = {}) {
 	const pick = async (group) =>
 		selectWorkspaces(await readRegistry(config), group || undefined);
 	const env = async (input, apply) => {
@@ -64,8 +64,8 @@ export function createHandlers(config) {
 	};
 	return {
 		registry: () => readRegistry(config),
-		status: async ({ group }) =>
-			Promise.all(
+		status: async ({ group }) => {
+			const statuses = await Promise.all(
 				(await pick(group)).map((workspace) =>
 					inspectWorkspace(workspace)
 						.then(async (state) => ({
@@ -80,7 +80,29 @@ export function createHandlers(config) {
 									: "Could not read this workspace. Check that the folder still exists.",
 						})),
 				),
-			),
+			);
+			// The last result is shown at the next start while fresh state is read. Local only:
+			// paths, branch names and commit subjects, in the user's own app data folder.
+			if (statusCache)
+				await writeFile(
+					statusCache,
+					JSON.stringify({ group: group ?? "", at: Date.now(), statuses }),
+					{ mode: 0o600 },
+				).catch(() => {});
+			return statuses;
+		},
+		// Last known statuses for this group, or null. Never fresh: for display while loading.
+		cachedStatus: async ({ group }) => {
+			if (!statusCache) return null;
+			try {
+				const saved = JSON.parse(await readFile(statusCache, "utf8"));
+				return saved.group === (group ?? "") && Array.isArray(saved.statuses)
+					? saved
+					: null;
+			} catch {
+				return null;
+			}
+		},
 		// History is read when its panel opens, not on every refresh.
 		graph: async ({ name }) => {
 			const { workspaces } = await readRegistry(config);

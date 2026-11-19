@@ -525,6 +525,41 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		assert.equal((await syncWorkspaces([f.a]))[0]?.error, "LOCKED");
 	});
 
+	test("cached status reads still notice new commits, changes and a changed remote", async (t) => {
+		const f = await fixture(t);
+		const published = await f.publish();
+		await fetchWorkspaces([f.a]);
+		const before = await inspectWorkspace(f.a);
+		assert.equal(before.baseBehind, 1);
+		assert.equal(before.dirty, false);
+		// A second read uses the cached identity and counts; new local work still shows.
+		await writeFile(join(f.first, "local.txt"), "local\n");
+		await run(f.first, ["add", "local.txt"]);
+		await run(f.first, ["commit", "-m", "local work"]);
+		await writeFile(join(f.first, "hello.txt"), "edited\n");
+		const after = await inspectWorkspace(f.a);
+		assert.equal(after.baseAhead, 1);
+		assert.equal(after.baseBehind, 1);
+		assert.equal(after.dirty, true);
+		assert.equal(after.subject, "local work");
+		assert.equal(after.baseHead, published);
+		assert.equal(after.branches.find((item) => item.current)?.name, "master");
+		// Changing the remote rewrites .git/config, so the cached identity is dropped.
+		await run(f.first, [
+			"remote",
+			"set-url",
+			"origin",
+			"https://example.invalid/other.git",
+		]);
+		await assert.rejects(inspectWorkspace(f.a), { code: "IDENTITY_CHANGED" });
+		// A detached HEAD has no branch row and reads its subject separately.
+		await run(f.first, ["remote", "set-url", "origin", f.remote]);
+		await run(f.first, ["checkout", "--detach", "HEAD~1"]);
+		const detached = await inspectWorkspace(f.a);
+		assert.equal(detached.branch, null);
+		assert.equal(detached.subject, "initial");
+	});
+
 	test("changed remote identity blocks operations without exposing its credentials", async (t) => {
 		const f = await fixture(t);
 		await run(f.first, [
