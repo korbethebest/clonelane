@@ -844,24 +844,39 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		// A stale expected tip moves nothing and never runs the callback.
 		let ran = false;
 		await assert.rejects(
-			moveRefLocked(f.first, ref, second, first, async () => {
-				ran = true;
-			}),
+			moveRefLocked(
+				f.first,
+				ref,
+				{ oldTip: first, newTip: second },
+				async () => {
+					ran = true;
+				},
+			),
 		);
 		assert.equal(ran, false);
 		assert.equal(await run(f.first, ["rev-parse", ref]), second);
 		// While the move holds the ref lock, another tool's commit fails instead of being lost.
-		await moveRefLocked(f.first, ref, first, second, async () => {
-			await assert.rejects(
-				run(f.first, ["commit", "--allow-empty", "-m", "racing"]),
-			);
-		});
+		await moveRefLocked(
+			f.first,
+			ref,
+			{ oldTip: second, newTip: first },
+			async () => {
+				await assert.rejects(
+					run(f.first, ["commit", "--allow-empty", "-m", "racing"]),
+				);
+			},
+		);
 		assert.equal(await run(f.first, ["rev-parse", ref]), first);
 		// A failing callback leaves the ref where it was.
 		await assert.rejects(
-			moveRefLocked(f.first, ref, second, first, async () => {
-				throw new Error("stop");
-			}),
+			moveRefLocked(
+				f.first,
+				ref,
+				{ oldTip: first, newTip: second },
+				async () => {
+					throw new Error("stop");
+				},
+			),
 			/stop/,
 		);
 		assert.equal(await run(f.first, ["rev-parse", ref]), first);

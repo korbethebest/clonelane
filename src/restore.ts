@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 import { fail } from "./errors.ts";
 import { withLock } from "./files.ts";
-import { git, moveRefLocked } from "./git.ts";
+import { git, gitSucceeds, moveRefLocked } from "./git.ts";
 import { begin, finish, type Operation, readOperations } from "./journal.ts";
 import { busyElsewhere } from "./sync.ts";
 import {
@@ -73,6 +73,9 @@ export async function restoreOperation(
 		};
 		const read = (ref: string) =>
 			git(path, ["rev-parse", "--verify", "--quiet", ref]).catch(() => null);
+		// The ref comes from a file on disk: only a well-formed branch name reaches Git.
+		if (!(await gitSucceeds(path, ["check-ref-format", operation.ref])))
+			fail("INVALID_RECORD", `Operation ${id} has a malformed branch name.`);
 		const current = await read(operation.ref);
 		const refuse = (reason: string, message: string): RestoreResult => ({
 			...base,
@@ -147,25 +150,34 @@ export async function restoreOperation(
 		// by another tool meanwhile fails loudly instead of being dropped.
 		let treeMoved = false;
 		try {
-			await moveRefLocked(
-				path,
-				operation.ref,
-				operation.from,
-				current,
-				async () => {
-					if (!checkedOutHere) return;
-					// Two-tree read-tree is what reset --keep does: it refuses to drop local changes.
-					await git(path, ["read-tree", "-m", "-u", current, operation.from]);
-					treeMoved = true;
-				},
-			);
+			// Not checked out: update-ref's own old-value check is already atomic.
+			if (!checkedOutHere)
+				await git(path, ["update-ref", operation.ref, operation.from, current]);
+			else
+				await moveRefLocked(
+					path,
+					operation.ref,
+					{ oldTip: current, newTip: operation.from },
+					async () => {
+						// Two-tree read-tree is what reset --keep does: it refuses to drop local changes.
+						await git(path, ["read-tree", "-m", "-u", current, operation.from]);
+						treeMoved = true;
+					},
+				);
 		} catch (error) {
 			await finish(state.commonDir, restoreId, "failed");
 			const now = await read(operation.ref);
-			// The ref commit failed after the files changed: put the files back.
+			// The ref did not move but the files did: put the files back. If that fails too,
+			// the original error is still the one reported.
 			if (treeMoved && now === current)
-				await git(path, ["read-tree", "-m", "-u", operation.from, current]);
-			if (now !== current)
+				await git(path, [
+					"read-tree",
+					"-m",
+					"-u",
+					operation.from,
+					current,
+				]).catch(() => {});
+			if (!treeMoved && now != null && now !== current)
 				return refuse(
 					"moved-since",
 					"The branch moved while restoring. Nothing was changed.",

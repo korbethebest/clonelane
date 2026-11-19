@@ -212,56 +212,78 @@ export function describeGitFailure(
 }
 
 /**
- * Moves `ref` from `from` to `to` in one Git ref transaction, running `during` while Git
- * holds the ref's lock. Nothing else can move the ref meanwhile: a concurrent `git commit`
- * fails with a lock error instead of being silently dropped. If `from` no longer matches,
- * or `during` fails, the ref is left untouched.
+ * Moves `ref` from `oldTip` to `newTip` in one Git ref transaction, running `during`
+ * while Git holds the ref's lock. Nothing else can move the ref meanwhile: a concurrent
+ * `git commit` fails with a lock error instead of being silently dropped. If the ref is no
+ * longer at `oldTip`, or `during` fails, the ref is left untouched. Needs Git 2.27+.
  */
-export async function moveRefLocked<T>(
+export async function moveRefLocked(
 	path: string,
 	ref: string,
-	to: string,
-	from: string,
-	during: () => Promise<T>,
-): Promise<T> {
+	{ oldTip, newTip }: { oldTip: string; newTip: string },
+	during: () => Promise<void>,
+): Promise<void> {
+	// The stdin protocol is line based: never let a value add fields or commands.
+	if (
+		!/^refs\/[^\s\p{Cc}]+$/u.test(ref) ||
+		![oldTip, newTip].every((tip) => /^[0-9a-f]{40,64}$/.test(tip))
+	)
+		fail("GIT_FAILED", "Refusing to move an invalid ref.");
 	const command = launch(["update-ref", "--stdin"]);
 	const child = spawn(command.executable, command.args, {
 		cwd: path,
 		env: command.env,
 		windowsHide: true,
 	});
-	const timer = setTimeout(() => child.kill(), 120_000);
+	let timedOut = false;
+	const timer = setTimeout(() => {
+		timedOut = true;
+		child.kill();
+	}, 120_000);
 	let stdout = "";
 	let stderr = "";
+	let spawnError: string | undefined;
+	let onPrepared = () => {};
 	child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
-		stdout += chunk;
+		stdout = (stdout + chunk).slice(-4096);
+		if (stdout.includes("prepare: ok")) onPrepared();
 	});
 	child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
-		stderr += chunk;
+		stderr = (stderr + chunk).slice(-65536);
 	});
 	const exited = new Promise<number | null>((done) => {
 		child.on("close", done);
-		child.on("error", () => done(null));
+		child.on("error", (error: NodeJS.ErrnoException) => {
+			spawnError = error.code;
+			done(null);
+		});
 	});
 	const failed = (): never => {
+		if (timedOut)
+			fail("GIT_TIMEOUT", "Git did not finish moving the branch in time.");
+		// Git is launched by absolute path, so ENOENT means the working folder is gone.
+		if (spawnError === "ENOENT")
+			fail("GIT_NO_FOLDER", "The workspace folder does not exist any more.");
+		if (/unknown command: start/.test(stderr))
+			fail(
+				"GIT_TOO_OLD",
+				"Restoring needs Git 2.27 or newer. Update Git and try again.",
+			);
 		const [code, message] = describeGitFailure(stderr);
 		fail(code, message);
 	};
 	try {
 		child.stdin.on("error", () => {}); // Git may exit early; its stderr explains why.
-		child.stdin.write(`start\nupdate ${ref} ${to} ${from}\nprepare\n`);
+		child.stdin.write(`start\nupdate ${ref} ${newTip} ${oldTip}\nprepare\n`);
 		const prepared = await Promise.race([
-			new Promise<true>((ready) =>
-				child.stdout.on("data", () => {
-					if (stdout.includes("prepare: ok")) ready(true);
-				}),
-			),
+			new Promise<true>((ready) => {
+				onPrepared = () => ready(true);
+			}),
 			exited.then(() => false),
 		]);
 		if (!prepared) failed();
-		let result: T;
 		try {
-			result = await during();
+			await during();
 		} catch (error) {
 			child.stdin.end("abort\n");
 			await exited;
@@ -269,7 +291,6 @@ export async function moveRefLocked<T>(
 		}
 		child.stdin.end("commit\n");
 		if ((await exited) !== 0) failed();
-		return result;
 	} finally {
 		clearTimeout(timer);
 	}
