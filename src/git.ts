@@ -65,6 +65,12 @@ export async function git(path: string, args: string[]): Promise<string> {
 		"GIT_ALTERNATE_OBJECT_DIRECTORIES",
 	])
 		delete env[key];
+	// LC_ALL would override LC_MESSAGES below. Keep its character locale as LC_CTYPE so only
+	// the message language changes.
+	if (env.LC_ALL) {
+		env.LC_CTYPE ??= env.LC_ALL;
+		delete env.LC_ALL;
+	}
 	try {
 		const { stdout } = await exec(
 			executable,
@@ -93,6 +99,10 @@ export async function git(path: string, args: string[]): Promise<string> {
 					GIT_TERMINAL_PROMPT: "0",
 					GCM_INTERACTIVE: "never",
 					GIT_EDITOR: "true",
+					// Untranslated messages only, so failures can be matched below; the
+					// character handling of paths and commit subjects is left alone.
+					LC_MESSAGES: "C",
+					LANGUAGE: "C",
 				},
 			},
 		);
@@ -101,8 +111,15 @@ export async function git(path: string, args: string[]): Promise<string> {
 		const failure = error as {
 			killed?: boolean;
 			code?: unknown;
+			stdout?: unknown;
 			stderr?: unknown;
 		};
+		// Node also sets `killed` when it stops a child for exceeding maxBuffer.
+		if (failure.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER")
+			fail(
+				"GIT_OUTPUT_TOO_LARGE",
+				"Git produced more output than Clonelane reads (8 MiB). Run the same step with Git directly.",
+			);
 		if (failure.killed)
 			fail(
 				"GIT_TIMEOUT",
@@ -111,7 +128,10 @@ export async function git(path: string, args: string[]): Promise<string> {
 		// Git is launched by absolute path, so ENOENT here means the working folder is gone.
 		if (failure.code === "ENOENT")
 			fail("GIT_NO_FOLDER", "The workspace folder does not exist any more.");
-		const [code, message] = describeGitFailure(String(failure.stderr ?? ""));
+		const [code, message] = describeGitFailure(
+			String(failure.stderr ?? ""),
+			String(failure.stdout ?? ""),
+		);
 		fail(code, message);
 	}
 }
@@ -120,7 +140,8 @@ export async function git(path: string, args: string[]): Promise<string> {
 // only matched against known failure kinds to tell the user what to do next.
 const failures: [RegExp, string, string][] = [
 	[
-		/could not read (username|password)|authentication failed|permission denied \(publickey|terminal prompts disabled|access denied|returned error: 40[13]|http 40[13]/i,
+		// Windows file errors read "Access is denied", which this does not match.
+		/could not read (username|password)|authentication failed|permission denied \(publickey|terminal prompts disabled|returned error: 40[13]|http 40[13]|access denied/i,
 		"GIT_AUTH",
 		"The remote rejected the credentials. Check that this account can fetch the repository with Git.",
 	],
@@ -154,12 +175,30 @@ const failures: [RegExp, string, string][] = [
 		"GIT_LOCAL_CHANGES",
 		"Local files would be overwritten. Commit or move them first.",
 	],
-	[/conflict/i, "GIT_CONFLICT", "Git stopped on a conflict."],
 ];
 
-export function describeGitFailure(output: string): [string, string] {
+// Git's own conflict reports, not any line that happens to contain the word. Git prints
+// "CONFLICT (...)" and "Automatic merge failed" on stdout, "Could not apply" on stderr.
+const conflictReports = [
+	/^CONFLICT \(/m,
+	/^(?:error: )?could not apply [0-9a-f]+|^automatic merge failed/im,
+];
+const conflict = {
+	test: (output: string) =>
+		conflictReports.some((report) => report.test(output)),
+};
+const conflictMessage = "Git stopped on a conflict.";
+
+// stderr is matched against every kind. stdout can hold file contents, subjects or branch
+// names, so it is only checked for Git's conflict report.
+export function describeGitFailure(
+	stderr: string,
+	stdout = "",
+): [string, string] {
 	for (const [pattern, code, message] of failures)
-		if (pattern.test(output)) return [code, message];
+		if (pattern.test(stderr)) return [code, message];
+	if (conflict.test(stderr) || conflict.test(stdout))
+		return ["GIT_CONFLICT", conflictMessage];
 	return [
 		"GIT_FAILED",
 		"Git operation failed. Inspect the workspace with Git; command output was suppressed.",

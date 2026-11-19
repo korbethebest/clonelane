@@ -11,6 +11,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - `status` in the CLI shows an unreadable workspace (for example a deleted folder) and still lists the others.
 - `fetch`, `sync` and `status` exit with code 1 when any workspace failed. `fetch` now prints a result per workspace instead of a list of names.
 - The desktop app names the workspaces whose fetch failed, and sync failures show a sentence instead of a code.
+- **Breaking (library):** `fetchWorkspaces()` no longer throws when a fetch fails. It resolves to a `FetchResult[]` in input order; check `result === "failed"` on each entry. Code that relied on the rejection would otherwise continue with stale remote refs. `syncWorkspaces()` accepts `{ fetch: true }` to fetch first and skip only the workspaces whose fetch failed, and `SyncResult` gains a `message`.
 
 ## [0.1.0] - 2026-11-19
 

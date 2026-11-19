@@ -225,8 +225,14 @@ async function syncBaseRef(
 	};
 }
 
-// dryRun is read-only: it deliberately does NOT fetch. With `fetch`, a real sync fetches
-// first and skips only the workspaces whose fetch failed.
+/**
+ * Fast-forwards (and, with `rebase`, rebases) every workspace, one at a time.
+ *
+ * - `dryRun`: read-only preview from the cached remote refs. It never fetches, and
+ *   `fetch` is ignored; call `fetchWorkspaces()` first for a fresh preview.
+ * - `fetch`: fetch first, then skip only the workspaces whose fetch failed
+ *   (`reason: "fetch-failed"`).
+ */
 export async function syncWorkspaces(
 	workspaces: Workspace[],
 	options: { dryRun?: boolean; rebase?: boolean; fetch?: boolean } = {},
@@ -236,10 +242,10 @@ export async function syncWorkspaces(
 		return Promise.all(workspaces.map((item) => syncOne(item, options)));
 	const fetched = options.fetch ? await fetchWorkspaces(workspaces) : [];
 	const results: SyncResult[] = [];
-	for (const workspace of workspaces) {
-		const fetchFailure = fetched.find(
-			(item) => item.name === workspace.name && item.result === "failed",
-		);
+	for (const [index, workspace] of workspaces.entries()) {
+		// fetchWorkspaces answers in input order, so results pair by position, not name.
+		const fetchFailure =
+			fetched[index]?.result === "failed" ? fetched[index] : undefined;
 		results.push(
 			fetchFailure
 				? {
@@ -370,10 +376,16 @@ async function syncOne(
 export async function fetchWorkspaces(
 	workspaces: Workspace[],
 ): Promise<FetchResult[]> {
-	const results = new Map<string, FetchResult>();
-	const record = (members: Workspace[], outcome: Omit<FetchResult, "name">) => {
+	// Keyed by the workspace object, so results never mix even if names repeat.
+	const results = new Map<Workspace, FetchResult>();
+	const record = (
+		members: Workspace[],
+		outcome: Omit<FetchResult, "name">,
+		onlyMissing = false,
+	) => {
 		for (const member of members)
-			results.set(member.name, { name: member.name, ...outcome });
+			if (!onlyMissing || !results.has(member))
+				results.set(member, { name: member.name, ...outcome });
 	};
 	// commonDir -> (remote + base) -> workspaces sharing that one fetch
 	const clones = new Map<string, Map<string, Workspace[]>>();
@@ -410,14 +422,23 @@ export async function fetchWorkspaces(
 					}
 				}
 			}).catch((error) =>
-				record([...targets.values()].flat(), {
-					result: "failed",
-					...failure(error),
-				}),
+				// A lock that could not be taken (or released) must not undo fetches that
+				// already succeeded under it.
+				record(
+					[...targets.values()].flat(),
+					{ result: "failed", ...failure(error) },
+					true,
+				),
 			),
 		),
 	);
 	return workspaces.map(
-		(workspace) => results.get(workspace.name) as FetchResult,
+		(workspace) =>
+			results.get(workspace) ?? {
+				name: workspace.name,
+				result: "failed",
+				error: "IO_ERROR",
+				message: "This workspace was not fetched.",
+			},
 	);
 }

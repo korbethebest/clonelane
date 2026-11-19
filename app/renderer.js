@@ -706,6 +706,8 @@ async function forget(name) {
 function syncLines(item) {
 	const workspace = workspaceNamed(item.name);
 	const ref = baseRef(workspace);
+	// Failed before the workspace was read (fetch, lock): there is no branch to describe.
+	if (!item.head) return [`Not synced — ${reasonText(item.reason)}`];
 	const branch = item.branch ?? "detached HEAD";
 	// After Apply, say what happened rather than what would.
 	const done = item.result === "updated";
@@ -897,8 +899,8 @@ $("#fetch").addEventListener("click", async () => {
 	const failed = fetched.filter((item) => item.result === "failed");
 	if (failed.length)
 		showError("footer-alert", {
-			message: `Fetch failed for ${failed.map((item) => `${item.name}: ${item.message}`).join(" ")}`,
-			code: failed.map((item) => item.error).join(", "),
+			message: `Fetched ${fetched.length - failed.length} of ${plural(fetched.length, "workspace")}. ${failed.map((item) => `${item.name}: ${item.message}`).join(" · ")}`,
+			code: [...new Set(failed.map((item) => item.error))].join(", "),
 		});
 	else say(`Fetched ${plural(fetched.length, "workspace")}.`);
 });
