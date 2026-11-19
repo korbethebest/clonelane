@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { accessSync, constants, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
@@ -53,8 +53,9 @@ const gitExecutable = () => {
 	return gitPath;
 };
 
-export async function git(path: string, args: string[]): Promise<string> {
-	const executable = gitExecutable();
+// Every Git process gets the same hardened launch: absolute path, no hooks, no
+// repository redirection from the environment and untranslated messages.
+function launch(args: string[]) {
 	const env = { ...process.env };
 	for (const key of [
 		"GIT_DIR",
@@ -71,41 +72,46 @@ export async function git(path: string, args: string[]): Promise<string> {
 		env.LC_CTYPE ??= env.LC_ALL;
 		delete env.LC_ALL;
 	}
+	return {
+		executable: gitExecutable(),
+		args: [
+			"--no-optional-locks",
+			"-c",
+			`core.hooksPath=${hooksPath()}`,
+			"-c",
+			"core.fsmonitor=false",
+			"-c",
+			"maintenance.auto=false",
+			"-c",
+			"gc.auto=0",
+			"-c",
+			"core.untrackedCache=false",
+			...args,
+		],
+		env: {
+			...env,
+			GIT_TERMINAL_PROMPT: "0",
+			GCM_INTERACTIVE: "never",
+			GIT_EDITOR: "true",
+			// Untranslated messages only, so failures can be matched below; the
+			// character handling of paths and commit subjects is left alone.
+			LC_MESSAGES: "C",
+			LANGUAGE: "C",
+		},
+	};
+}
+
+export async function git(path: string, args: string[]): Promise<string> {
+	const command = launch(args);
 	try {
-		const { stdout } = await exec(
-			executable,
-			[
-				"--no-optional-locks",
-				"-c",
-				`core.hooksPath=${hooksPath()}`,
-				"-c",
-				"core.fsmonitor=false",
-				"-c",
-				"maintenance.auto=false",
-				"-c",
-				"gc.auto=0",
-				"-c",
-				"core.untrackedCache=false",
-				...args,
-			],
-			{
-				cwd: path,
-				encoding: "utf8",
-				timeout: 60_000,
-				maxBuffer: 8 * 1024 * 1024,
-				windowsHide: true,
-				env: {
-					...env,
-					GIT_TERMINAL_PROMPT: "0",
-					GCM_INTERACTIVE: "never",
-					GIT_EDITOR: "true",
-					// Untranslated messages only, so failures can be matched below; the
-					// character handling of paths and commit subjects is left alone.
-					LC_MESSAGES: "C",
-					LANGUAGE: "C",
-				},
-			},
-		);
+		const { stdout } = await exec(command.executable, command.args, {
+			cwd: path,
+			encoding: "utf8",
+			timeout: 60_000,
+			maxBuffer: 8 * 1024 * 1024,
+			windowsHide: true,
+			env: command.env,
+		});
 		return stdout.trimEnd();
 	} catch (error) {
 		const failure = error as {
@@ -203,6 +209,70 @@ export function describeGitFailure(
 		"GIT_FAILED",
 		"Git operation failed. Inspect the workspace with Git; command output was suppressed.",
 	];
+}
+
+/**
+ * Moves `ref` from `from` to `to` in one Git ref transaction, running `during` while Git
+ * holds the ref's lock. Nothing else can move the ref meanwhile: a concurrent `git commit`
+ * fails with a lock error instead of being silently dropped. If `from` no longer matches,
+ * or `during` fails, the ref is left untouched.
+ */
+export async function moveRefLocked<T>(
+	path: string,
+	ref: string,
+	to: string,
+	from: string,
+	during: () => Promise<T>,
+): Promise<T> {
+	const command = launch(["update-ref", "--stdin"]);
+	const child = spawn(command.executable, command.args, {
+		cwd: path,
+		env: command.env,
+		windowsHide: true,
+	});
+	const timer = setTimeout(() => child.kill(), 120_000);
+	let stdout = "";
+	let stderr = "";
+	child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+		stdout += chunk;
+	});
+	child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+		stderr += chunk;
+	});
+	const exited = new Promise<number | null>((done) => {
+		child.on("close", done);
+		child.on("error", () => done(null));
+	});
+	const failed = (): never => {
+		const [code, message] = describeGitFailure(stderr);
+		fail(code, message);
+	};
+	try {
+		child.stdin.on("error", () => {}); // Git may exit early; its stderr explains why.
+		child.stdin.write(`start\nupdate ${ref} ${to} ${from}\nprepare\n`);
+		const prepared = await Promise.race([
+			new Promise<true>((ready) =>
+				child.stdout.on("data", () => {
+					if (stdout.includes("prepare: ok")) ready(true);
+				}),
+			),
+			exited.then(() => false),
+		]);
+		if (!prepared) failed();
+		let result: T;
+		try {
+			result = await during();
+		} catch (error) {
+			child.stdin.end("abort\n");
+			await exited;
+			throw error;
+		}
+		child.stdin.end("commit\n");
+		if ((await exited) !== 0) failed();
+		return result;
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 export async function gitSucceeds(

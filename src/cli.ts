@@ -144,7 +144,7 @@ async function main(): Promise<void> {
 		return;
 	}
 	if (command === "restore") {
-		if (positionals.length !== 2 || !/^[0-9a-f]{8}$/.test(argument ?? ""))
+		if (positionals.length !== 2 || !/^[0-9a-f]{16}$/.test(argument ?? ""))
 			fail(
 				"USAGE",
 				"restore requires one operation id from clonelane history.",
@@ -152,8 +152,12 @@ async function main(): Promise<void> {
 		const id = argument as string;
 		// The journal is per clone, so find the workspace that recorded this id.
 		const owners: (typeof registry.workspaces)[number][] = [];
+		let unreadable: unknown;
 		for (const workspace of selectWorkspaces(registry, values.group)) {
-			const operations = await listOperations(workspace).catch(() => []);
+			const operations = await listOperations(workspace).catch((error) => {
+				unreadable ??= error;
+				return [];
+			});
 			if (operations.some((item) => item.id === id)) owners.push(workspace);
 		}
 		if (owners.length > 1)
@@ -162,6 +166,8 @@ async function main(): Promise<void> {
 				`Operation ${id} exists in several workspaces. Narrow it with --group.`,
 			);
 		const owner = owners[0];
+		// The id may be in a workspace that could not be read: say why instead of "not found".
+		if (!owner && unreadable) throw unreadable;
 		if (!owner)
 			fail(
 				"NOT_FOUND",
@@ -190,8 +196,19 @@ async function main(): Promise<void> {
 			),
 		);
 		if (histories.some((item) => "error" in item)) process.exitCode = 1;
-		if (values.json) print(histories.flat());
-		else
+		if (values.json) {
+			// stdout stays a plain list of operations; unreadable workspaces go to stderr.
+			print(histories.flatMap((item) => ("error" in item ? [] : item)));
+			for (const item of histories)
+				if ("error" in item)
+					console.error(
+						JSON.stringify({
+							workspace: item.workspace.name,
+							error: item.error.code,
+							message: item.error.message,
+						}),
+					);
+		} else
 			for (const [index, item] of histories.entries()) {
 				const name = selected[index]?.name;
 				if ("error" in item) {

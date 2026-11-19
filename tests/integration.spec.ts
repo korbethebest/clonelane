@@ -21,6 +21,7 @@ import {
 	findGit,
 	git,
 	hooksPath,
+	moveRefLocked,
 	repositoryIdentity,
 } from "../src/git.ts";
 import {
@@ -834,6 +835,38 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		assert.equal(await run(f.first, ["rev-parse", "HEAD"]), after);
 	});
 
+	test("a locked ref move blocks concurrent commits and checks the old tip", async (t) => {
+		const f = await fixture(t);
+		const first = await run(f.first, ["rev-parse", "HEAD"]);
+		await run(f.first, ["commit", "--allow-empty", "-m", "second"]);
+		const second = await run(f.first, ["rev-parse", "HEAD"]);
+		const ref = "refs/heads/master";
+		// A stale expected tip moves nothing and never runs the callback.
+		let ran = false;
+		await assert.rejects(
+			moveRefLocked(f.first, ref, second, first, async () => {
+				ran = true;
+			}),
+		);
+		assert.equal(ran, false);
+		assert.equal(await run(f.first, ["rev-parse", ref]), second);
+		// While the move holds the ref lock, another tool's commit fails instead of being lost.
+		await moveRefLocked(f.first, ref, first, second, async () => {
+			await assert.rejects(
+				run(f.first, ["commit", "--allow-empty", "-m", "racing"]),
+			);
+		});
+		assert.equal(await run(f.first, ["rev-parse", ref]), first);
+		// A failing callback leaves the ref where it was.
+		await assert.rejects(
+			moveRefLocked(f.first, ref, second, first, async () => {
+				throw new Error("stop");
+			}),
+			/stop/,
+		);
+		assert.equal(await run(f.first, ["rev-parse", ref]), first);
+	});
+
 	test("restore refuses a branch that moved since or a workspace with local changes", async (t) => {
 		const f = await fixture(t);
 		await f.publish();
@@ -945,7 +978,7 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		) as { result: string };
 		assert.equal(plan.result, "planned");
 		assert.equal(await run(f.first, ["rev-parse", "HEAD"]), after);
-		await assert.rejects(cli(["restore", "deadbeef"]), /NOT_FOUND/);
+		await assert.rejects(cli(["restore", "0123456789abcdef"]), /NOT_FOUND/);
 	});
 
 	test("CLI status reports a missing folder and still shows the other workspaces", async (t) => {

@@ -190,13 +190,18 @@ export async function inspectWorkspace(
 			readOperations(rawCommonDir),
 		]);
 	// Moves this workspace started but never finished: the process stopped midway.
-	// A later move of the same branch means the user has moved on, so the warning clears.
+	// A later successful move of the same branch (from any worktree of this clone) means the
+	// branch is in a known state again, so the warning clears.
 	const moved = new Set<string>();
 	let interrupted = 0;
 	for (const item of operations) {
-		if (item.path !== workspace.path) continue;
-		if (item.state === "interrupted" && !moved.has(item.ref)) interrupted++;
-		moved.add(item.ref);
+		if (
+			item.state === "interrupted" &&
+			item.path === workspace.path &&
+			!moved.has(item.ref)
+		)
+			interrupted++;
+		if (item.state === "done") moved.add(item.ref);
 	}
 	const branches: BranchInfo[] = [];
 	for (const row of rows.split("\n").filter(Boolean)) {

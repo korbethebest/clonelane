@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 import { fail } from "./errors.ts";
 import { withLock } from "./files.ts";
-import { git } from "./git.ts";
+import { git, moveRefLocked } from "./git.ts";
 import { begin, finish, type Operation, readOperations } from "./journal.ts";
 import { busyElsewhere } from "./sync.ts";
 import {
@@ -103,6 +103,11 @@ export async function restoreOperation(
 		// Where the operation left the branch. An interrupted rebase has no known tip.
 		const left =
 			operation.tip ?? (operation.kind === "rebase" ? undefined : operation.to);
+		if (left === undefined)
+			return refuse(
+				"outcome-unknown",
+				`The rebase stopped before recording where it left the branch. Inspect the branch and, if you want the old commit back, use the backup ref ${operation.backup} with Git.`,
+			);
 		if (current !== left)
 			return refuse(
 				"moved-since",
@@ -138,21 +143,33 @@ export async function restoreOperation(
 			to: operation.from,
 			backup,
 		});
-		// Another tool may have committed since the checks above; never drop that commit.
-		if ((await read(operation.ref)) !== current) {
-			await finish(state.commonDir, restoreId, "failed");
-			return refuse(
-				"moved-since",
-				"The branch moved while restoring. Nothing was changed.",
-			);
-		}
+		// Git holds the branch's ref lock from the tip check until the move, so a commit made
+		// by another tool meanwhile fails loudly instead of being dropped.
+		let treeMoved = false;
 		try {
-			// --keep refuses to drop local changes; update-ref moves only if the tip is unchanged.
-			if (checkedOutHere) await git(path, ["reset", "--keep", operation.from]);
-			else
-				await git(path, ["update-ref", operation.ref, operation.from, current]);
+			await moveRefLocked(
+				path,
+				operation.ref,
+				operation.from,
+				current,
+				async () => {
+					if (!checkedOutHere) return;
+					// Two-tree read-tree is what reset --keep does: it refuses to drop local changes.
+					await git(path, ["read-tree", "-m", "-u", current, operation.from]);
+					treeMoved = true;
+				},
+			);
 		} catch (error) {
 			await finish(state.commonDir, restoreId, "failed");
+			const now = await read(operation.ref);
+			// The ref commit failed after the files changed: put the files back.
+			if (treeMoved && now === current)
+				await git(path, ["read-tree", "-m", "-u", operation.from, current]);
+			if (now !== current)
+				return refuse(
+					"moved-since",
+					"The branch moved while restoring. Nothing was changed.",
+				);
 			throw error;
 		}
 		await finish(state.commonDir, restoreId, "done", operation.from);

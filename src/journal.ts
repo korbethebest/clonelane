@@ -30,9 +30,14 @@ export interface Operation {
 	 */
 	state: "started" | "done" | "failed" | "interrupted";
 	finished?: string;
+	/** The Clonelane process that made the move. */
+	pid?: number;
 }
 
-type Start = Omit<Operation, "id" | "time" | "state" | "tip" | "finished">;
+type Start = Omit<
+	Operation,
+	"id" | "time" | "state" | "tip" | "finished" | "pid"
+>;
 
 const file = (commonDir: string) => join(commonDir, "clonelane-journal.jsonl");
 // Keep the journal small: past this size only the most recent entries are kept.
@@ -52,11 +57,12 @@ async function append(commonDir: string, record: object): Promise<void> {
 
 /** Records the start of a move and returns its id. Call it under the clone's lock. */
 export async function begin(commonDir: string, start: Start): Promise<string> {
-	const id = randomBytes(4).toString("hex");
+	const id = randomBytes(8).toString("hex");
 	await append(commonDir, {
 		id,
 		time: new Date().toISOString(),
 		state: "started",
+		pid: process.pid,
 		...start,
 	});
 	return id;
@@ -80,34 +86,35 @@ export async function finish(
 	}).catch(() => {});
 }
 
-const fields = [
-	"time",
-	"workspace",
-	"path",
-	"kind",
-	"ref",
-	"from",
-	"to",
-	"backup",
-];
-// A damaged line missing a field is skipped like a torn one, so readers can trust the shape.
+const sha = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+// A damaged or edited line is skipped like a torn one, so readers and restore can trust it.
 const complete = (record: Partial<Operation>) =>
-	fields.every((field) => typeof record[field as keyof Operation] === "string");
+	["time", "workspace", "path", "kind"].every(
+		(field) => typeof record[field as keyof Operation] === "string",
+	) &&
+	typeof record.ref === "string" &&
+	record.ref.startsWith("refs/heads/") &&
+	typeof record.backup === "string" &&
+	record.backup.startsWith("refs/clonelane/backups/") &&
+	sha.test(String(record.from)) &&
+	sha.test(String(record.to));
 
-// A lock left by a killed process must not hide its interrupted move: check the holder's pid.
-async function lockHeld(commonDir: string): Promise<boolean> {
+// The pid in the lock, "unknown" while its holder is still writing it, or null when no
+// live process holds it (a lock left by a killed process does not count).
+async function lockHolder(
+	commonDir: string,
+): Promise<number | "unknown" | null> {
 	const text = await readOptional(join(commonDir, "clonelane.lock")).catch(
 		() => "",
 	);
-	if (text == null) return false;
+	if (text == null) return null;
 	const pid = Number(text.trim());
-	// Empty while the holder is still writing it: treat as held.
-	if (!Number.isInteger(pid) || pid <= 0) return true;
+	if (!Number.isInteger(pid) || pid <= 0) return "unknown";
 	try {
 		process.kill(pid, 0);
-		return true;
+		return pid;
 	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "EPERM";
+		return (error as NodeJS.ErrnoException).code === "EPERM" ? pid : null;
 	}
 }
 
@@ -131,14 +138,30 @@ export async function readOperations(
 		}
 		if (typeof record.id !== "string") continue;
 		const known = operations.get(record.id);
-		if (record.state === "started" && !known && complete(record))
-			operations.set(record.id, record as Operation);
-		else if (known) Object.assign(known, record);
+		if (record.state === "started") {
+			// A repeated id never replaces the operation recorded first.
+			if (!known && complete(record))
+				operations.set(record.id, record as Operation);
+		} else if (
+			known?.state === "started" &&
+			(record.state === "done" || record.state === "failed")
+		) {
+			// An outcome only sets the outcome fields.
+			known.state = record.state;
+			if (typeof record.tip === "string" && sha.test(record.tip))
+				known.tip = record.tip;
+			if (typeof record.finished === "string") known.finished = record.finished;
+		}
 	}
-	const running = !holdingLock && (await lockHeld(commonDir));
+	const holder = holdingLock ? null : await lockHolder(commonDir);
+	// Still running only if the live lock holder is the process that started it. Entries from
+	// before pids were recorded fall back to any live holder.
+	const running = (operation: Operation) =>
+		holder === "unknown" ||
+		(holder != null && (operation.pid == null || operation.pid === holder));
 	return [...operations.values()]
 		.map((operation) =>
-			operation.state === "started" && !running
+			operation.state === "started" && !running(operation)
 				? { ...operation, state: "interrupted" as const }
 				: operation,
 		)
