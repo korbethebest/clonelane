@@ -73,7 +73,9 @@ async function identify(input: {
 		git(cwd, ["remote", "-v"]),
 		validBranch(cwd, base),
 	]);
-	const [top = "", rawCommonDir = ""] = dirs.split("\n");
+	const [top, rawCommonDir, ...extra] = dirs.split("\n");
+	if (!top || !rawCommonDir || extra.length)
+		fail("GIT_PARSE", "Could not read the repository's folders from Git.");
 	const [root, commonDir] = await Promise.all([
 		realpath(top),
 		realpath(rawCommonDir),

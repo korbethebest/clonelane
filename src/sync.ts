@@ -426,54 +426,77 @@ export async function fetchWorkspaces(
 			if (!onlyMissing || !results.has(member))
 				results.set(member, { name: member.name, ...outcome });
 	};
+	// Identify in parallel, then group in input order, so the clone that fetches from the
+	// network is always the first one listed, whatever order the checks finish in.
+	const commonDirs = await Promise.all(
+		workspaces.map((workspace) =>
+			assertIdentity(workspace).catch((error: unknown) => {
+				record([workspace], { result: "failed", ...failure(error) });
+				return null;
+			}),
+		),
+	);
 	// commonDir -> (remote + base) -> workspaces sharing that one fetch
 	const clones = new Map<string, Map<string, Workspace[]>>();
-	await Promise.all(
-		workspaces.map(async (workspace) => {
-			try {
-				const commonDir = await assertIdentity(workspace);
-				const targets = clones.get(commonDir) ?? new Map();
-				clones.set(commonDir, targets);
-				const key = `${workspace.remote}\0${workspace.base}`;
-				targets.set(key, [...(targets.get(key) ?? []), workspace]);
-			} catch (error) {
-				record([workspace], { result: "failed", ...failure(error) });
-			}
-		}),
-	);
+	for (const [index, workspace] of workspaces.entries()) {
+		const commonDir = commonDirs[index];
+		if (commonDir == null) continue;
+		const targets = clones.get(commonDir) ?? new Map<string, Workspace[]>();
+		clones.set(commonDir, targets);
+		const key = `${workspace.remote}\0${workspace.base}`;
+		targets.set(key, [...(targets.get(key) ?? []), workspace]);
+	}
+	// One network fetch per repository and base branch: the first clone listed for it.
+	const same = (a: Workspace, b: Workspace) =>
+		a.repository === b.repository && a.base === b.base;
+	const leads: Workspace[] = [];
+	for (const targets of clones.values())
+		for (const [workspace] of targets.values())
+			if (workspace && !leads.some((lead) => same(lead, workspace)))
+				leads.push(workspace);
 	const fetchClone = (
 		commonDir: string,
 		targets: Map<string, Workspace[]>,
-		// The clone (of the same repository and base) that already fetched, if any.
-		sourceFor: (workspace: Workspace) => Workspace | undefined,
-	) =>
-		withLock(join(commonDir, "clonelane.lock"), async () => {
-			for (const members of targets.values()) {
+		phase: "network" | "copy",
+	) => {
+		const due = [...targets.values()].filter(
+			([workspace]) =>
+				leads.includes(workspace as Workspace) === (phase === "network"),
+		);
+		if (due.length === 0) return;
+		return withLock(join(commonDir, "clonelane.lock"), async () => {
+			for (const members of due) {
 				const [workspace] = members as [Workspace];
-				const into = `refs/remotes/${workspace.remote}/${workspace.base}`;
-				const fetch = (from: string, ref: string) =>
+				const gitFetch = (from: string, ref: string) =>
 					git(workspace.path, [
 						"fetch",
 						"--no-tags",
 						"--no-recurse-submodules",
 						from,
-						`${ref}:${into}`,
+						`${ref}:refs/remotes/${workspace.remote}/${workspace.base}`,
 					]);
-				const source = sourceFor(workspace);
+				const source =
+					phase === "copy"
+						? leads.find(
+								(lead) =>
+									same(lead, workspace) &&
+									results.get(lead)?.result === "fetched",
+							)
+						: undefined;
 				if (source) {
 					try {
-						await fetch(
+						await gitFetch(
 							source.path,
 							`refs/remotes/${source.remote}/${source.base}`,
 						);
 						record(members, { result: "fetched", source: source.name });
 						continue;
 					} catch {
-						// Fall back to the network below.
+						// The same fetch from the network below reports any real problem.
 					}
 				}
 				try {
-					await fetch(workspace.remote, `refs/heads/${workspace.base}`);
+					await gitFetch(workspace.remote, `refs/heads/${workspace.base}`);
 					record(members, { result: "fetched" });
 				} catch (error) {
 					record(members, { result: "failed", ...failure(error) });
@@ -482,34 +505,15 @@ export async function fetchWorkspaces(
 		}).catch((error) =>
 			// A lock that could not be taken (or released) must not undo fetches that
 			// already succeeded under it.
-			record(
-				[...targets.values()].flat(),
-				{ result: "failed", ...failure(error) },
-				true,
-			),
+			record(due.flat(), { result: "failed", ...failure(error) }, true),
 		);
-	// Clones of one repository: the first fetches from the network, the rest from it.
-	const families = new Map<string, [string, Map<string, Workspace[]>][]>();
-	for (const clone of clones) {
-		const [first] = [...clone[1].values()][0] as [Workspace];
-		const key = first.repository;
-		families.set(key, [...(families.get(key) ?? []), clone]);
-	}
+	};
+	// Leads fetch from the network side by side, then every other clone copies from its lead.
 	await Promise.all(
-		[...families.values()].map(async ([lead, ...rest]) => {
-			if (!lead) return;
-			await fetchClone(lead[0], lead[1], () => undefined);
-			const fetched = [...lead[1].values()]
-				.map(([workspace]) => workspace as Workspace)
-				.filter((workspace) => results.get(workspace)?.result === "fetched");
-			await Promise.all(
-				rest.map(([commonDir, targets]) =>
-					fetchClone(commonDir, targets, (workspace) =>
-						fetched.find((source) => source.base === workspace.base),
-					),
-				),
-			);
-		}),
+		[...clones].map(([dir, targets]) => fetchClone(dir, targets, "network")),
+	);
+	await Promise.all(
+		[...clones].map(([dir, targets]) => fetchClone(dir, targets, "copy")),
 	);
 	return workspaces.map(
 		(workspace) =>

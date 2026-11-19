@@ -13,7 +13,6 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Changed
 
 - The desktop app's **Refresh** and **Fetch** buttons are now **Reload local** and **Fetch remote**, with tooltips that say which one uses the network.
-
 - Failures say what went wrong and what to do next. Git's output is still never shown; it is matched to known kinds such as rejected credentials, an unreachable remote, a missing base branch or a stale `.lock` file, each with a fixed message.
 - `fetch` reports each workspace separately, and one failure no longer stops the others. A real `sync` skips only the workspaces whose fetch failed (`fetch-failed`).
 - `status` in the CLI shows an unreadable workspace (for example a deleted folder) and still lists the others.
