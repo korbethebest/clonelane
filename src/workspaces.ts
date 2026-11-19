@@ -1,4 +1,5 @@
 import { realpath, stat } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { fail } from "./errors.ts";
@@ -137,30 +138,47 @@ export async function assertIdentity(workspace: Workspace): Promise<string> {
 	return (await checkIdentity(workspace)).commonDir;
 }
 
-// Read-only views reuse a passed identity check while nothing it depends on changed: the
-// .git entry is the same one (not a replaced folder) and the repository's config (which
-// holds the remote URL) is untouched. Anything that changes a branch checks in full.
+// Read-only status views (opt in with reuseIdentity) reuse a passed identity check while
+// nothing it depends on changed: the .git entry is the same one (not a replaced folder),
+// and the repository's and the user's Git config files (remote URLs, insteadOf rewrites)
+// are untouched. Anything that changes a branch or a file always checks in full.
 const IDENTITY_TTL = 5 * 60_000;
 const identities = new Map<
 	string,
-	{ key: string; at: number; dirs: { commonDir: string; gitDir: string } }
+	{
+		key: string | null;
+		at: number;
+		dirs: { commonDir: string; gitDir: string };
+	}
 >();
+const missing = { ino: -1n, mtimeNs: -1n, size: -1n };
 async function fingerprint(
 	workspace: Workspace,
-	commonDir: string,
+	dirs: { commonDir: string; gitDir: string },
 ): Promise<string | null> {
+	const home = homedir();
+	const xdg = process.env.XDG_CONFIG_HOME || join(home, ".config");
 	try {
-		const [dotGit, config] = await Promise.all([
-			stat(join(workspace.path, ".git"), { bigint: true }),
-			stat(join(commonDir, "config"), { bigint: true }),
-		]);
+		const dotGit = await stat(join(workspace.path, ".git"), { bigint: true });
+		// Without a real file id a replaced .git folder could look the same: never cache.
+		if (dotGit.ino === 0n) return null;
+		const files = await Promise.all(
+			[
+				join(dirs.commonDir, "config"),
+				join(dirs.gitDir, "config.worktree"),
+				join(home, ".gitconfig"),
+				join(xdg, "git", "config"),
+			].map((file) => stat(file, { bigint: true }).catch(() => missing)),
+		);
 		return JSON.stringify([
 			workspace,
 			String(dotGit.ino),
 			dotGit.isFile() ? String(dotGit.mtimeNs) : "",
-			String(config.ino),
-			String(config.mtimeNs),
-			String(config.size),
+			...files.map((file) => [
+				String(file.ino),
+				String(file.mtimeNs),
+				String(file.size),
+			]),
 		]);
 	} catch {
 		return null;
@@ -170,18 +188,29 @@ async function cachedIdentity(
 	workspace: Workspace,
 ): Promise<{ commonDir: string; gitDir: string }> {
 	const known = identities.get(workspace.path);
-	if (known && Date.now() - known.at < IDENTITY_TTL) {
-		const key = await fingerprint(workspace, known.dirs.commonDir);
-		if (key === known.key) return known.dirs;
-	}
-	identities.delete(workspace.path);
+	// Taken before the check, so a config change during the check is never stamped valid.
+	const before = known ? await fingerprint(workspace, known.dirs) : null;
+	if (
+		known?.key &&
+		before === known.key &&
+		Date.now() - known.at < IDENTITY_TTL
+	)
+		return known.dirs;
 	const dirs = await checkIdentity(workspace);
-	const key = await fingerprint(workspace, dirs.commonDir);
-	if (key) identities.set(workspace.path, { key, at: Date.now(), dirs });
+	const same =
+		known?.dirs.commonDir === dirs.commonDir &&
+		known.dirs.gitDir === dirs.gitDir;
+	// The first check only learns where the config lives; the next one can be cached.
+	identities.set(workspace.path, {
+		key: same ? before : null,
+		at: Date.now(),
+		dirs,
+	});
 	return dirs;
 }
 
-// Ahead/behind between two commits never changes, so it is computed once per pair.
+// Ahead/behind between two commits does not change while the history is complete, so it is
+// computed once per pair and clone. A shallow clone can gain history, so it is not cached.
 const countCache = new Map<string, [number, number]>();
 
 function counts(result: string): [number, number] {
@@ -196,14 +225,21 @@ function counts(result: string): [number, number] {
 	return [ahead, behind];
 }
 
+/**
+ * Reads a workspace's state. `reuseIdentity` lets a read-only status view reuse a recent
+ * identity check (see above); callers that go on to change anything must leave it off.
+ */
 export async function inspectWorkspace(
 	workspace: Workspace,
+	{ reuseIdentity = false }: { reuseIdentity?: boolean } = {},
 ): Promise<WorkspaceStatus> {
 	const path = workspace.path;
 	const baseRef = `refs/remotes/${workspace.remote}/${workspace.base}`;
 	// Two Git processes cover the state below; each one costs real time on Windows. Both
 	// are read-only, so they run alongside the identity check, whose error wins.
-	const identity = cachedIdentity(workspace);
+	const identity = reuseIdentity
+		? cachedIdentity(workspace)
+		: checkIdentity(workspace);
 	const reads = Promise.all([
 		// HEAD's commit and whether anything is uncommitted.
 		git(path, [
@@ -250,14 +286,20 @@ export async function inspectWorkspace(
 			: git(path, ["log", "-1", "--no-color", "--format=%s", tip, "--"]),
 		(async () => {
 			if (baseHead == null) return [null, null] as const;
-			const key = `${tip}...${baseHead}`;
+			const range = `${tip}...${baseHead}`;
+			const key = `${commonDir}\n${range}`;
 			const known = countCache.get(key);
 			if (known) return known;
-			const result = counts(
-				await git(path, ["rev-list", "--left-right", "--count", key, "--"]),
-			);
-			if (countCache.size > 1000) countCache.clear();
-			countCache.set(key, result);
+			const [result, shallow] = await Promise.all([
+				git(path, ["rev-list", "--left-right", "--count", range, "--"]).then(
+					counts,
+				),
+				exists(join(commonDir, "shallow")),
+			]);
+			if (!shallow) {
+				if (countCache.size > 1000) countCache.clear();
+				countCache.set(key, result);
+			}
 			return result;
 		})(),
 	]);

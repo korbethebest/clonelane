@@ -529,7 +529,11 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		const f = await fixture(t);
 		const published = await f.publish();
 		await fetchWorkspaces([f.a]);
-		const before = await inspectWorkspace(f.a);
+		const reuse = { reuseIdentity: true };
+		// The first read learns where the config lives, the second caches, later ones reuse.
+		await inspectWorkspace(f.a, reuse);
+		await inspectWorkspace(f.a, reuse);
+		const before = await inspectWorkspace(f.a, reuse);
 		assert.equal(before.baseBehind, 1);
 		assert.equal(before.dirty, false);
 		// A second read uses the cached identity and counts; new local work still shows.
@@ -537,7 +541,7 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		await run(f.first, ["add", "local.txt"]);
 		await run(f.first, ["commit", "-m", "local work"]);
 		await writeFile(join(f.first, "hello.txt"), "edited\n");
-		const after = await inspectWorkspace(f.a);
+		const after = await inspectWorkspace(f.a, reuse);
 		assert.equal(after.baseAhead, 1);
 		assert.equal(after.baseBehind, 1);
 		assert.equal(after.dirty, true);
@@ -551,11 +555,13 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 			"origin",
 			"https://example.invalid/other.git",
 		]);
-		await assert.rejects(inspectWorkspace(f.a), { code: "IDENTITY_CHANGED" });
+		await assert.rejects(inspectWorkspace(f.a, reuse), {
+			code: "IDENTITY_CHANGED",
+		});
 		// A detached HEAD has no branch row and reads its subject separately.
 		await run(f.first, ["remote", "set-url", "origin", f.remote]);
 		await run(f.first, ["checkout", "--detach", "HEAD~1"]);
-		const detached = await inspectWorkspace(f.a);
+		const detached = await inspectWorkspace(f.a, reuse);
 		assert.equal(detached.branch, null);
 		assert.equal(detached.subject, "initial");
 	});

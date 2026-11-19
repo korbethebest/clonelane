@@ -235,13 +235,18 @@ async function main(): Promise<void> {
 		// One unreadable workspace must not hide the others.
 		const statuses = await Promise.all(
 			selected.map((workspace) =>
-				inspectWorkspace(workspace).catch((error: unknown) => ({
-					workspace,
-					error:
-						error instanceof ClonelaneError
-							? { code: error.code, message: error.message }
-							: { code: "IO_ERROR", message: "Could not read this workspace." },
-				})),
+				inspectWorkspace(workspace, { reuseIdentity: true }).catch(
+					(error: unknown) => ({
+						workspace,
+						error:
+							error instanceof ClonelaneError
+								? { code: error.code, message: error.message }
+								: {
+										code: "IO_ERROR",
+										message: "Could not read this workspace.",
+									},
+					}),
+				),
 			),
 		);
 		if (statuses.some((state) => "error" in state)) process.exitCode = 1;

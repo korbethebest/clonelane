@@ -449,11 +449,17 @@ export async function fetchWorkspaces(
 	// One network fetch per repository and base branch: the first clone listed for it.
 	const same = (a: Workspace, b: Workspace) =>
 		a.repository === b.repository && a.base === b.base;
+	// Leads are picked in input order. Only the first workspace of each target fetches
+	// (worktrees sharing a target share its fetch), so only those can lead.
+	const firsts = new Set(
+		[...clones.values()].flatMap((targets) =>
+			[...targets.values()].map(([workspace]) => workspace),
+		),
+	);
 	const leads: Workspace[] = [];
-	for (const targets of clones.values())
-		for (const [workspace] of targets.values())
-			if (workspace && !leads.some((lead) => same(lead, workspace)))
-				leads.push(workspace);
+	for (const workspace of workspaces)
+		if (firsts.has(workspace) && !leads.some((lead) => same(lead, workspace)))
+			leads.push(workspace);
 	const fetchClone = (
 		commonDir: string,
 		targets: Map<string, Workspace[]>,

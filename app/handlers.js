@@ -1,5 +1,12 @@
-import { readdir, readFile, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import {
+	mkdir,
+	readdir,
+	readFile,
+	rename,
+	stat,
+	writeFile,
+} from "node:fs/promises";
+import { dirname, join } from "node:path";
 
 import {
 	addWorkspace,
@@ -42,6 +49,18 @@ async function lastFetch(commonDir) {
 
 // Electron-free so the app's actions can be exercised with plain Node.
 export function createHandlers(config, { statusCache } = {}) {
+	// Writes are serialized and atomic (temp file, then rename), and never delay a status.
+	let saving = Promise.resolve();
+	const save = (data) => {
+		saving = saving
+			.then(async () => {
+				await mkdir(dirname(statusCache), { recursive: true });
+				const temp = `${statusCache}.${process.pid}.tmp`;
+				await writeFile(temp, JSON.stringify(data), { mode: 0o600 });
+				await rename(temp, statusCache);
+			})
+			.catch(() => {});
+	};
 	const pick = async (group) =>
 		selectWorkspaces(await readRegistry(config), group || undefined);
 	const env = async (input, apply) => {
@@ -67,7 +86,7 @@ export function createHandlers(config, { statusCache } = {}) {
 		status: async ({ group }) => {
 			const statuses = await Promise.all(
 				(await pick(group)).map((workspace) =>
-					inspectWorkspace(workspace)
+					inspectWorkspace(workspace, { reuseIdentity: true })
 						.then(async (state) => ({
 							...state,
 							lastFetch: await lastFetch(state.commonDir),
@@ -84,20 +103,33 @@ export function createHandlers(config, { statusCache } = {}) {
 			// The last result is shown at the next start while fresh state is read. Local only:
 			// paths, branch names and commit subjects, in the user's own app data folder.
 			if (statusCache)
-				await writeFile(
-					statusCache,
-					JSON.stringify({ group: group ?? "", at: Date.now(), statuses }),
-					{ mode: 0o600 },
-				).catch(() => {});
+				save({ config, group: group ?? "", at: Date.now(), statuses });
 			return statuses;
 		},
-		// Last known statuses for this group, or null. Never fresh: for display while loading.
+		// Last known statuses for this registry and group, limited to workspaces still
+		// registered, or null. Never fresh: for display while the current state loads.
 		cachedStatus: async ({ group }) => {
 			if (!statusCache) return null;
 			try {
 				const saved = JSON.parse(await readFile(statusCache, "utf8"));
-				return saved.group === (group ?? "") && Array.isArray(saved.statuses)
-					? saved
+				if (
+					saved.config !== config ||
+					saved.group !== (group ?? "") ||
+					!Array.isArray(saved.statuses)
+				)
+					return null;
+				const current = await pick(group);
+				const statuses = current
+					.map((workspace) =>
+						saved.statuses.find(
+							(state) =>
+								state?.workspace?.name === workspace.name &&
+								state.workspace.path === workspace.path,
+						),
+					)
+					.filter(Boolean);
+				return statuses.length === current.length
+					? { at: saved.at, statuses }
 					: null;
 			} catch {
 				return null;

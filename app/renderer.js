@@ -311,6 +311,8 @@ async function refresh() {
 	);
 	view.loading = 0;
 	if (statuses) view.statuses = statuses;
+	// The last known state was only a stand-in: never leave it up as if it were current.
+	else if (saved?.data) view.statuses = null;
 	render();
 }
 
