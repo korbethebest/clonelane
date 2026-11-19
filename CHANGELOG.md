@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/). Until 1.0, minor versions may change the CLI and library API.
 
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-11-19
 
 First public release.
 
@@ -21,3 +21,5 @@ First public release.
 - `.env` files must be untracked and ignored; a tracked case variant such as `.ENV` is refused.
 - Git is launched by absolute path from absolute `PATH` entries only, so a `git.exe` in a working tree never runs in place of Git, even when `PATH` contains an empty or relative entry.
 - Credentials in remote URLs, including remote-helper URLs (`<transport>::<address>`), are never stored or printed.
+
+[0.1.0]: https://github.com/korbethebest/clonelane/releases/tag/v0.1.0
