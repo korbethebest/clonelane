@@ -4,6 +4,11 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- A recovery journal. Every branch move `sync` makes is recorded with its backup ref and outcome in the clone's `.git` directory. `clonelane history` lists them, and `clonelane restore <id> [--dry-run]` moves a branch back to its backup when nothing has changed since; otherwise it refuses with a reason. Restores are backed up and journaled too.
+- `status`, the desktop app and the library (`WorkspaceStatus.interrupted`) flag moves that started but never finished. The library exports `listOperations()` and `restoreOperation()`.
+
 ### Changed
 
 - Failures say what went wrong and what to do next. Git's output is still never shown; it is matched to known kinds such as rejected credentials, an unreachable remote, a missing base branch or a stale `.lock` file, each with a fixed message.

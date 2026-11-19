@@ -1,6 +1,7 @@
 export type { EnvChange, EnvOptions, EnvPlan } from "./env.ts";
 export { applyEnv, planEnv } from "./env.ts";
 export { ClonelaneError } from "./errors.ts";
+export type { Operation } from "./journal.ts";
 export type { Registry } from "./registry.ts";
 export {
 	addWorkspace,
@@ -9,6 +10,8 @@ export {
 	selectWorkspaces,
 	updateWorkspace,
 } from "./registry.ts";
+export type { RestoreResult } from "./restore.ts";
+export { listOperations, restoreOperation } from "./restore.ts";
 export type {
 	BaseUpdate,
 	FetchResult,

@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { fail } from "./errors.ts";
 import { exists } from "./files.ts";
 import { git, repositoryIdentity, validBranch, validName } from "./git.ts";
+import { readOperations } from "./journal.ts";
 
 export interface Workspace {
 	name: string;
@@ -34,6 +35,8 @@ export interface WorkspaceStatus {
 	baseAhead: number | null;
 	baseBehind: number | null;
 	branches: BranchInfo[];
+	/** Clonelane moves in this workspace that started but never recorded an outcome. */
+	interrupted: number;
 }
 
 export async function registerWorkspace(input: {
@@ -169,21 +172,27 @@ export async function inspectWorkspace(
 	if (!rawCommonDir || !gitDir || !head || symbolic == null)
 		fail("GIT_PARSE", "Could not read Git state.");
 	const branch = symbolic.startsWith("refs/heads/") ? symbolic.slice(11) : null;
-	const [commonDir, operation, [baseAhead, baseBehind]] = await Promise.all([
-		realpath(rawCommonDir),
-		Promise.all(
-			[
-				"MERGE_HEAD",
-				"CHERRY_PICK_HEAD",
-				"REVERT_HEAD",
-				"rebase-merge",
-				"rebase-apply",
-				"sequencer",
-				"BISECT_LOG",
-			].map((marker) => exists(join(gitDir, marker))),
-		).then((found) => found.some(Boolean)),
-		baseHead == null ? ([null, null] as const) : counts(path, head, baseHead),
-	]);
+	const [commonDir, operation, [baseAhead, baseBehind], operations] =
+		await Promise.all([
+			realpath(rawCommonDir),
+			Promise.all(
+				[
+					"MERGE_HEAD",
+					"CHERRY_PICK_HEAD",
+					"REVERT_HEAD",
+					"rebase-merge",
+					"rebase-apply",
+					"sequencer",
+					"BISECT_LOG",
+				].map((marker) => exists(join(gitDir, marker))),
+			).then((found) => found.some(Boolean)),
+			baseHead == null ? ([null, null] as const) : counts(path, head, baseHead),
+			readOperations(rawCommonDir),
+		]);
+	// Moves this workspace started but never finished: the process stopped midway.
+	const interrupted = operations.filter(
+		(item) => item.path === workspace.path && item.state === "interrupted",
+	).length;
 	const branches: BranchInfo[] = [];
 	for (const row of rows.split("\n").filter(Boolean)) {
 		const [name, upstream, current, track = ""] = row.split("\0");
@@ -213,6 +222,7 @@ export async function inspectWorkspace(
 		baseAhead,
 		baseBehind,
 		branches,
+		interrupted,
 	};
 }
 
