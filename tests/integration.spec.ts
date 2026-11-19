@@ -691,6 +691,10 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 			],
 			["CONFLICT (content): Merge conflict in a.txt", "GIT_CONFLICT"],
 			["error: could not apply 1a2b3c4... feature", "GIT_CONFLICT"],
+			[
+				"remote: Access denied\nfatal: unable to access the repository",
+				"GIT_AUTH",
+			],
 			// Not conflicts or credential problems, despite the words they contain.
 			[
 				"error: pathspec 'conflict-notes' did not match any file(s)",
@@ -707,6 +711,21 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 				"message must not echo Git output",
 			);
 		}
+	});
+
+	test("a real merge conflict is classified from Git's stdout", async (t) => {
+		const f = await fixture(t);
+		await run(f.first, ["switch", "-c", "other"]);
+		await writeFile(join(f.first, "hello.txt"), "other\n");
+		await run(f.first, ["commit", "-am", "other side"]);
+		await run(f.first, ["switch", "master"]);
+		await writeFile(join(f.first, "hello.txt"), "master\n");
+		await run(f.first, ["commit", "-am", "master side"]);
+		// git prints "CONFLICT (content): ..." on stdout, not stderr.
+		await assert.rejects(git(f.first, ["merge", "--no-edit", "other"]), {
+			code: "GIT_CONFLICT",
+		});
+		await run(f.first, ["merge", "--abort"]);
 	});
 
 	test("one failing fetch or lock is reported per workspace without stopping the others", async (t) => {
@@ -742,11 +761,14 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		);
 		// Output past the read limit is named as such, not as a timeout.
 		await writeFile(join(f.first, "big.bin"), "x".repeat(9 * 1024 * 1024));
-		const blob = await run(f.first, ["hash-object", "-w", "big.bin"]);
-		await assert.rejects(git(f.first, ["cat-file", "-p", blob]), {
-			code: "GIT_OUTPUT_TOO_LARGE",
-		});
-		await rm(join(f.first, "big.bin"));
+		try {
+			const blob = await run(f.first, ["hash-object", "-w", "big.bin"]);
+			await assert.rejects(git(f.first, ["cat-file", "-p", blob]), {
+				code: "GIT_OUTPUT_TOO_LARGE",
+			});
+		} finally {
+			await rm(join(f.first, "big.bin"), { force: true });
+		}
 		// A stale lock from another Git process is named, not just "Git failed".
 		await f.publish("lock.txt");
 		await fetchWorkspaces([f.a]);

@@ -63,6 +63,8 @@ export async function git(path: string, args: string[]): Promise<string> {
 		"GIT_INDEX_FILE",
 		"GIT_OBJECT_DIRECTORY",
 		"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+		// LC_ALL would override LC_MESSAGES below; the character locale (LANG, LC_CTYPE) stays.
+		"LC_ALL",
 	])
 		delete env[key];
 	try {
@@ -93,9 +95,9 @@ export async function git(path: string, args: string[]): Promise<string> {
 					GIT_TERMINAL_PROMPT: "0",
 					GCM_INTERACTIVE: "never",
 					GIT_EDITOR: "true",
-					// Untranslated messages, so failures can be matched below. Data such as
-					// paths and commit subjects is unaffected.
-					LC_ALL: "C",
+					// Untranslated messages only, so failures can be matched below; the
+					// character handling of paths and commit subjects is left alone.
+					LC_MESSAGES: "C",
 					LANGUAGE: "C",
 				},
 			},
@@ -105,6 +107,7 @@ export async function git(path: string, args: string[]): Promise<string> {
 		const failure = error as {
 			killed?: boolean;
 			code?: unknown;
+			stdout?: unknown;
 			stderr?: unknown;
 		};
 		// Node also sets `killed` when it stops a child for exceeding maxBuffer.
@@ -121,7 +124,11 @@ export async function git(path: string, args: string[]): Promise<string> {
 		// Git is launched by absolute path, so ENOENT here means the working folder is gone.
 		if (failure.code === "ENOENT")
 			fail("GIT_NO_FOLDER", "The workspace folder does not exist any more.");
-		const [code, message] = describeGitFailure(String(failure.stderr ?? ""));
+		// Git reports some failures (such as "CONFLICT (content)") on stdout. Both streams are
+		// only matched here, never shown.
+		const [code, message] = describeGitFailure(
+			`${String(failure.stderr ?? "")}\n${String(failure.stdout ?? "")}`,
+		);
 		fail(code, message);
 	}
 }
@@ -130,7 +137,9 @@ export async function git(path: string, args: string[]): Promise<string> {
 // only matched against known failure kinds to tell the user what to do next.
 const failures: [RegExp, string, string][] = [
 	[
-		/could not read (username|password)|authentication failed|permission denied \(publickey|terminal prompts disabled|returned error: 40[13]|http 40[13]/i,
+		// "remote:"/"fatal:" access denied is a server refusing credentials; Windows file errors
+		// say "Access is denied" and are not matched.
+		/could not read (username|password)|authentication failed|permission denied \(publickey|terminal prompts disabled|returned error: 40[13]|http 40[13]|^(?:remote|fatal): .*access denied/im,
 		"GIT_AUTH",
 		"The remote rejected the credentials. Check that this account can fetch the repository with Git.",
 	],
