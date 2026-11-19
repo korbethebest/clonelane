@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { accessSync, constants, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
@@ -53,8 +53,9 @@ const gitExecutable = () => {
 	return gitPath;
 };
 
-export async function git(path: string, args: string[]): Promise<string> {
-	const executable = gitExecutable();
+// Every Git process gets the same hardened launch: absolute path, no hooks, no
+// repository redirection from the environment and untranslated messages.
+function launch(args: string[]) {
 	const env = { ...process.env };
 	for (const key of [
 		"GIT_DIR",
@@ -71,41 +72,46 @@ export async function git(path: string, args: string[]): Promise<string> {
 		env.LC_CTYPE ??= env.LC_ALL;
 		delete env.LC_ALL;
 	}
+	return {
+		executable: gitExecutable(),
+		args: [
+			"--no-optional-locks",
+			"-c",
+			`core.hooksPath=${hooksPath()}`,
+			"-c",
+			"core.fsmonitor=false",
+			"-c",
+			"maintenance.auto=false",
+			"-c",
+			"gc.auto=0",
+			"-c",
+			"core.untrackedCache=false",
+			...args,
+		],
+		env: {
+			...env,
+			GIT_TERMINAL_PROMPT: "0",
+			GCM_INTERACTIVE: "never",
+			GIT_EDITOR: "true",
+			// Untranslated messages only, so failures can be matched below; the
+			// character handling of paths and commit subjects is left alone.
+			LC_MESSAGES: "C",
+			LANGUAGE: "C",
+		},
+	};
+}
+
+export async function git(path: string, args: string[]): Promise<string> {
+	const command = launch(args);
 	try {
-		const { stdout } = await exec(
-			executable,
-			[
-				"--no-optional-locks",
-				"-c",
-				`core.hooksPath=${hooksPath()}`,
-				"-c",
-				"core.fsmonitor=false",
-				"-c",
-				"maintenance.auto=false",
-				"-c",
-				"gc.auto=0",
-				"-c",
-				"core.untrackedCache=false",
-				...args,
-			],
-			{
-				cwd: path,
-				encoding: "utf8",
-				timeout: 60_000,
-				maxBuffer: 8 * 1024 * 1024,
-				windowsHide: true,
-				env: {
-					...env,
-					GIT_TERMINAL_PROMPT: "0",
-					GCM_INTERACTIVE: "never",
-					GIT_EDITOR: "true",
-					// Untranslated messages only, so failures can be matched below; the
-					// character handling of paths and commit subjects is left alone.
-					LC_MESSAGES: "C",
-					LANGUAGE: "C",
-				},
-			},
-		);
+		const { stdout } = await exec(command.executable, command.args, {
+			cwd: path,
+			encoding: "utf8",
+			timeout: 60_000,
+			maxBuffer: 8 * 1024 * 1024,
+			windowsHide: true,
+			env: command.env,
+		});
 		return stdout.trimEnd();
 	} catch (error) {
 		const failure = error as {
@@ -203,6 +209,91 @@ export function describeGitFailure(
 		"GIT_FAILED",
 		"Git operation failed. Inspect the workspace with Git; command output was suppressed.",
 	];
+}
+
+/**
+ * Moves `ref` from `oldTip` to `newTip` in one Git ref transaction, running `during`
+ * while Git holds the ref's lock. Nothing else can move the ref meanwhile: a concurrent
+ * `git commit` fails with a lock error instead of being silently dropped. If the ref is no
+ * longer at `oldTip`, or `during` fails, the ref is left untouched. Needs Git 2.27+.
+ */
+export async function moveRefLocked(
+	path: string,
+	ref: string,
+	{ oldTip, newTip }: { oldTip: string; newTip: string },
+	during: () => Promise<void>,
+): Promise<void> {
+	// The stdin protocol is line based: never let a value add fields or commands.
+	if (
+		!/^refs\/[^\s\p{Cc}]+$/u.test(ref) ||
+		![oldTip, newTip].every((tip) => /^[0-9a-f]{40,64}$/.test(tip))
+	)
+		fail("GIT_FAILED", "Refusing to move an invalid ref.");
+	const command = launch(["update-ref", "--stdin"]);
+	const child = spawn(command.executable, command.args, {
+		cwd: path,
+		env: command.env,
+		windowsHide: true,
+	});
+	let timedOut = false;
+	const timer = setTimeout(() => {
+		timedOut = true;
+		child.kill();
+	}, 120_000);
+	let stdout = "";
+	let stderr = "";
+	let spawnError: string | undefined;
+	let onPrepared = () => {};
+	child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+		stdout = (stdout + chunk).slice(-4096);
+		if (stdout.includes("prepare: ok")) onPrepared();
+	});
+	child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+		stderr = (stderr + chunk).slice(-65536);
+	});
+	const exited = new Promise<number | null>((done) => {
+		child.on("close", done);
+		child.on("error", (error: NodeJS.ErrnoException) => {
+			spawnError = error.code;
+			done(null);
+		});
+	});
+	const failed = (): never => {
+		if (timedOut)
+			fail("GIT_TIMEOUT", "Git did not finish moving the branch in time.");
+		// Git is launched by absolute path, so ENOENT means the working folder is gone.
+		if (spawnError === "ENOENT")
+			fail("GIT_NO_FOLDER", "The workspace folder does not exist any more.");
+		if (/unknown command: start/.test(stderr))
+			fail(
+				"GIT_TOO_OLD",
+				"Restoring needs Git 2.27 or newer. Update Git and try again.",
+			);
+		const [code, message] = describeGitFailure(stderr);
+		fail(code, message);
+	};
+	try {
+		child.stdin.on("error", () => {}); // Git may exit early; its stderr explains why.
+		child.stdin.write(`start\nupdate ${ref} ${newTip} ${oldTip}\nprepare\n`);
+		const prepared = await Promise.race([
+			new Promise<true>((ready) => {
+				onPrepared = () => ready(true);
+			}),
+			exited.then(() => false),
+		]);
+		if (!prepared) failed();
+		try {
+			await during();
+		} catch (error) {
+			child.stdin.end("abort\n");
+			await exited;
+			throw error;
+		}
+		child.stdin.end("commit\n");
+		if ((await exited) !== 0) failed();
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 export async function gitSucceeds(

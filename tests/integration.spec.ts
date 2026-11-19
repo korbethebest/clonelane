@@ -21,6 +21,7 @@ import {
 	findGit,
 	git,
 	hooksPath,
+	moveRefLocked,
 	repositoryIdentity,
 } from "../src/git.ts";
 import {
@@ -29,13 +30,16 @@ import {
 	fetchWorkspaces,
 	historyGraph,
 	inspectWorkspace,
+	listOperations,
 	planEnv,
 	readRegistry,
 	registerWorkspace,
 	removeWorkspace,
+	restoreOperation,
 	syncWorkspaces,
 	updateWorkspace,
 } from "../src/index.ts";
+import { begin } from "../src/journal.ts";
 
 const exec = promisify(execFile);
 const sandbox = resolve("tests.local");
@@ -791,6 +795,205 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		assert.equal(locked?.result, "failed");
 		assert.equal(locked?.error, "GIT_LOCKED");
 		assert.match(locked?.message ?? "", /lock/);
+	});
+
+	test("sync journals each move with a backup, and restore undoes it only once", async (t) => {
+		const f = await fixture(t);
+		const before = await run(f.first, ["rev-parse", "HEAD"]);
+		const after = await f.publish();
+		assert.equal(
+			(await syncWorkspaces([f.a], { fetch: true }))[0]?.result,
+			"updated",
+		);
+		const [move] = await listOperations(f.a);
+		assert.equal(move?.kind, "fast-forward");
+		assert.equal(move?.state, "done");
+		assert.equal(move?.from, before);
+		assert.equal(move?.tip, after);
+		assert.equal(await run(f.first, ["rev-parse", move?.backup ?? ""]), before);
+		assert.equal((await inspectWorkspace(f.a)).interrupted, 0);
+
+		const id = move?.id ?? "";
+		const plan = await restoreOperation(f.a, id, { dryRun: true });
+		assert.equal(plan.result, "planned");
+		assert.equal(await run(f.first, ["rev-parse", "HEAD"]), after);
+		const restored = await restoreOperation(f.a, id);
+		assert.equal(restored.result, "restored");
+		assert.equal(await run(f.first, ["rev-parse", "HEAD"]), before);
+		assert.equal(
+			await run(f.first, ["rev-parse", restored.backup ?? ""]),
+			after,
+		);
+		assert.equal((await restoreOperation(f.a, id)).reason, "already-restored");
+		// The restore is journaled too, so it can itself be undone.
+		const [undo] = await listOperations(f.a);
+		assert.equal(undo?.kind, "restore");
+		assert.equal(
+			(await restoreOperation(f.a, undo?.id ?? "")).result,
+			"restored",
+		);
+		assert.equal(await run(f.first, ["rev-parse", "HEAD"]), after);
+	});
+
+	test("a locked ref move blocks concurrent commits and checks the old tip", async (t) => {
+		const f = await fixture(t);
+		const first = await run(f.first, ["rev-parse", "HEAD"]);
+		await run(f.first, ["commit", "--allow-empty", "-m", "second"]);
+		const second = await run(f.first, ["rev-parse", "HEAD"]);
+		const ref = "refs/heads/master";
+		// A stale expected tip moves nothing and never runs the callback.
+		let ran = false;
+		await assert.rejects(
+			moveRefLocked(
+				f.first,
+				ref,
+				{ oldTip: first, newTip: second },
+				async () => {
+					ran = true;
+				},
+			),
+		);
+		assert.equal(ran, false);
+		assert.equal(await run(f.first, ["rev-parse", ref]), second);
+		// While the move holds the ref lock, another tool's commit fails instead of being lost.
+		await moveRefLocked(
+			f.first,
+			ref,
+			{ oldTip: second, newTip: first },
+			async () => {
+				await assert.rejects(
+					run(f.first, ["commit", "--allow-empty", "-m", "racing"]),
+				);
+			},
+		);
+		assert.equal(await run(f.first, ["rev-parse", ref]), first);
+		// A failing callback leaves the ref where it was.
+		await assert.rejects(
+			moveRefLocked(
+				f.first,
+				ref,
+				{ oldTip: first, newTip: second },
+				async () => {
+					throw new Error("stop");
+				},
+			),
+			/stop/,
+		);
+		assert.equal(await run(f.first, ["rev-parse", ref]), first);
+	});
+
+	test("restore refuses a branch that moved since or a workspace with local changes", async (t) => {
+		const f = await fixture(t);
+		await f.publish();
+		await syncWorkspaces([f.a], { fetch: true });
+		const [move] = await listOperations(f.a);
+		const id = move?.id ?? "";
+		await writeFile(join(f.first, "hello.txt"), "edited\n");
+		assert.equal((await restoreOperation(f.a, id)).reason, "workspace-busy");
+		await run(f.first, ["commit", "-am", "local work"]);
+		const head = await run(f.first, ["rev-parse", "HEAD"]);
+		assert.equal((await restoreOperation(f.a, id)).reason, "moved-since");
+		assert.equal(await run(f.first, ["rev-parse", "HEAD"]), head);
+		await assert.rejects(
+			restoreOperation(f.b, id),
+			/WRONG_WORKSPACE|No recorded/,
+		);
+	});
+
+	test("restore returns a rebased feature branch to its pre-rebase commit", async (t) => {
+		const f = await fixture(t);
+		await run(f.first, ["switch", "-c", "feature"]);
+		await writeFile(join(f.first, "feature.txt"), "feature\n");
+		await run(f.first, ["add", "feature.txt"]);
+		await run(f.first, ["commit", "-m", "feature"]);
+		const before = await run(f.first, ["rev-parse", "HEAD"]);
+		await f.publish();
+		await syncWorkspaces([f.a], { rebase: true, fetch: true });
+		const move = (await listOperations(f.a)).find(
+			(item) => item.kind === "rebase",
+		);
+		assert.equal(move?.tip, await run(f.first, ["rev-parse", "HEAD"]));
+		assert.equal(
+			(await restoreOperation(f.a, move?.id ?? "")).result,
+			"restored",
+		);
+		assert.equal(await run(f.first, ["rev-parse", "HEAD"]), before);
+		assert.equal(await run(f.first, ["branch", "--show-current"]), "feature");
+	});
+
+	test("a move that started but never finished reads as interrupted", async (t) => {
+		const f = await fixture(t);
+		const state = await inspectWorkspace(f.a);
+		const head = state.head;
+		await run(f.first, ["update-ref", "refs/clonelane/backups/manual", head]);
+		const id = await begin(state.commonDir, {
+			workspace: "first",
+			path: f.a.path,
+			kind: "fast-forward",
+			ref: "refs/heads/master",
+			from: head,
+			to: head,
+			backup: "refs/clonelane/backups/manual",
+		});
+		assert.equal((await inspectWorkspace(f.a)).interrupted, 1);
+		assert.equal((await inspectWorkspace(f.b)).interrupted, 0);
+		assert.equal((await listOperations(f.a))[0]?.state, "interrupted");
+		// While a Clonelane lock is held the entry is still running, not interrupted.
+		await writeFile(join(state.commonDir, "clonelane.lock"), "");
+		assert.equal((await listOperations(f.a))[0]?.state, "started");
+		assert.equal(
+			(await restoreOperation(f.a, id, { dryRun: true })).reason,
+			"in-progress",
+		);
+		// A torn trailing line from a hard stop is ignored.
+		await writeFile(
+			join(state.commonDir, "clonelane-journal.jsonl"),
+			'{"id":"broken',
+			{ flag: "a" },
+		);
+		assert.equal((await listOperations(f.a)).length, 1);
+		// A lock left by a killed process (dead pid) does not hide the interruption.
+		await writeFile(join(state.commonDir, "clonelane.lock"), "2147483646\n");
+		assert.equal((await listOperations(f.a))[0]?.state, "interrupted");
+		// A damaged started record is skipped rather than breaking readers.
+		await writeFile(
+			join(state.commonDir, "clonelane-journal.jsonl"),
+			'\n{"id":"0badf00d","state":"started"}\n',
+			{ flag: "a" },
+		);
+		assert.equal((await listOperations(f.a)).length, 1);
+		// A later move of the same branch clears the warning.
+		await rm(join(state.commonDir, "clonelane.lock"));
+		await f.publish();
+		await syncWorkspaces([f.a], { fetch: true });
+		assert.equal((await inspectWorkspace(f.a)).interrupted, 0);
+	});
+
+	test("CLI history lists moves and restore --dry-run plans without moving", async (t) => {
+		const f = await fixture(t);
+		const config = join(f.root, "registry.json");
+		await addWorkspace(config, { name: "a", path: f.first, group: "demo" });
+		const after = await f.publish();
+		await syncWorkspaces(
+			[(await readRegistry(config)).workspaces[0] as typeof f.a],
+			{ fetch: true },
+		);
+		const cli = (args: string[]) =>
+			exec(process.execPath, ["src/cli.ts", ...args, "--config", config], {
+				cwd: resolve("."),
+				encoding: "utf8",
+			});
+		const history = JSON.parse((await cli(["history", "--json"])).stdout) as {
+			id: string;
+			kind: string;
+		}[];
+		assert.equal(history[0]?.kind, "fast-forward");
+		const plan = JSON.parse(
+			(await cli(["restore", history[0]?.id ?? "", "--dry-run"])).stdout,
+		) as { result: string };
+		assert.equal(plan.result, "planned");
+		assert.equal(await run(f.first, ["rev-parse", "HEAD"]), after);
+		await assert.rejects(cli(["restore", "0123456789abcdef"]), /NOT_FOUND/);
 	});
 
 	test("CLI status reports a missing folder and still shows the other workspaces", async (t) => {

@@ -6,6 +6,7 @@ import { parseArgs } from "node:util";
 import { applyEnv, planEnv } from "./env.ts";
 import { ClonelaneError, fail } from "./errors.ts";
 import { addWorkspace, readRegistry, selectWorkspaces } from "./registry.ts";
+import { listOperations, restoreOperation } from "./restore.ts";
 import { fetchWorkspaces, syncWorkspaces } from "./sync.ts";
 import { inspectWorkspace } from "./workspaces.ts";
 
@@ -15,6 +16,8 @@ const help = `Clonelane — keep your Git workspaces in the same lane.
   clonelane status [--group <group>] [--json]
   clonelane fetch [--group <group>]
   clonelane sync [--group <group>] [--dry-run] [--rebase]
+  clonelane history [--group <group>] [--json]
+  clonelane restore <id> [--group <group>] [--dry-run]
   clonelane env plan|apply --source <name> --target <name> --all-keys | --keys API_URL,TOKEN
                         [--file .env] [--overwrite] [--public-keys VITE_API_URL]
 
@@ -23,6 +26,8 @@ Global: --config <file> (default: ~/.config/clonelane/registry.json), --help
 status and sync --dry-run use cached remote refs and do not fetch.
 sync fetches the selected base before updating. No command pushes.
 --rebase applies only to the current, unpublished, linear feature branch.
+history lists the branch moves Clonelane made, with their backups. restore moves a
+branch back to a backup only if it has not moved since; --dry-run shows the plan.
 env output shows key names and states only. Applying normalizes comments/formatting.
 `;
 
@@ -60,6 +65,8 @@ async function main(): Promise<void> {
 		status: ["group", "json"],
 		fetch: ["group"],
 		sync: ["group", "dry-run", "rebase"],
+		history: ["group", "json"],
+		restore: ["group", "dry-run"],
 		env: [
 			"source",
 			"target",
@@ -136,9 +143,94 @@ async function main(): Promise<void> {
 		);
 		return;
 	}
+	if (command === "restore") {
+		if (positionals.length !== 2 || !/^[0-9a-f]{16}$/.test(argument ?? ""))
+			fail(
+				"USAGE",
+				"restore requires one operation id from clonelane history.",
+			);
+		const id = argument as string;
+		// The journal is per clone, so find the workspace that recorded this id.
+		const owners: (typeof registry.workspaces)[number][] = [];
+		let unreadable: unknown;
+		for (const workspace of selectWorkspaces(registry, values.group)) {
+			const operations = await listOperations(workspace).catch((error) => {
+				unreadable ??= error;
+				return [];
+			});
+			if (operations.some((item) => item.id === id)) owners.push(workspace);
+		}
+		if (owners.length > 1)
+			fail(
+				"AMBIGUOUS",
+				`Operation ${id} exists in several workspaces. Narrow it with --group.`,
+			);
+		const owner = owners[0];
+		// The id may be in a workspace that could not be read: say why instead of "not found".
+		if (!owner && unreadable) throw unreadable;
+		if (!owner)
+			fail(
+				"NOT_FOUND",
+				`No recorded operation ${id}. Run "clonelane history" to list them.`,
+			);
+		const result = await restoreOperation(owner, id, {
+			dryRun: values["dry-run"],
+		});
+		print(result);
+		if (result.result === "refused") process.exitCode = 1;
+		return;
+	}
 	if (positionals.length !== 1)
 		fail("USAGE", "Unexpected positional argument.");
 	const selected = selectWorkspaces(registry, values.group);
+	if (command === "history") {
+		const histories = await Promise.all(
+			selected.map((workspace) =>
+				listOperations(workspace).catch((error: unknown) => ({
+					workspace,
+					error:
+						error instanceof ClonelaneError
+							? { code: error.code, message: error.message }
+							: { code: "IO_ERROR", message: "Could not read this workspace." },
+				})),
+			),
+		);
+		if (histories.some((item) => "error" in item)) process.exitCode = 1;
+		if (values.json) {
+			// stdout stays a plain list of operations; unreadable workspaces go to stderr.
+			print(histories.flatMap((item) => ("error" in item ? [] : item)));
+			for (const item of histories)
+				if ("error" in item)
+					console.error(
+						JSON.stringify({
+							workspace: item.workspace.name,
+							error: item.error.code,
+							message: item.error.message,
+						}),
+					);
+		} else
+			for (const [index, item] of histories.entries()) {
+				const name = selected[index]?.name;
+				if ("error" in item) {
+					console.log(`\n${name}: ${item.error.message}`);
+					continue;
+				}
+				console.log(`\n${name}: ${item.length} recorded moves`);
+				if (item.length)
+					console.table(
+						item.map((operation) => ({
+							id: operation.id,
+							time: operation.time,
+							kind: operation.kind,
+							branch: operation.ref.replace(/^refs\/heads\//, ""),
+							from: operation.from.slice(0, 12),
+							to: (operation.tip ?? operation.to).slice(0, 12),
+							state: operation.state,
+						})),
+					);
+			}
+		return;
+	}
 	if (command === "status") {
 		// One unreadable workspace must not hide the others.
 		const statuses = await Promise.all(
@@ -171,6 +263,7 @@ async function main(): Promise<void> {
 								operation: state.operation,
 								"ahead of base": state.baseAhead,
 								"behind base": state.baseBehind,
+								interrupted: state.interrupted,
 							},
 				),
 			);
@@ -182,6 +275,10 @@ async function main(): Promise<void> {
 				console.log(`\n${state.workspace.name}: local branches`);
 				console.table(state.branches);
 			}
+			if (statuses.some((state) => "interrupted" in state && state.interrupted))
+				console.log(
+					'A Clonelane update was interrupted. Run "clonelane history" to see it and its backup.',
+				);
 			console.log("Remote refs are cached. Run clonelane fetch to refresh.");
 		}
 		return;

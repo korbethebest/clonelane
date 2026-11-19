@@ -309,6 +309,11 @@ function workspaceStatus(state) {
 	const items = [];
 	if (state.operation) items.push(["Git operation in progress", "warn"]);
 	if (state.dirty) items.push(["Uncommitted changes", "warn"]);
+	if (state.interrupted > 0)
+		items.push([
+			"An update was interrupted — run clonelane history to see its backup",
+			"warn",
+		]);
 	if (state.baseHead == null) items.push([`${ref} not fetched yet`, "warn"]);
 	else {
 		if (state.baseBehind > 0)

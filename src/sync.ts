@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { ClonelaneError } from "./errors.ts";
 import { withLock } from "./files.ts";
 import { git, gitSucceeds } from "./git.ts";
+import { begin, finish } from "./journal.ts";
 import {
 	assertIdentity,
 	commonDirOf,
@@ -144,7 +145,10 @@ async function checkedPlan(
 
 // A rebase or bisect detaches HEAD, so `worktree list` stops naming the branch it works
 // on; the operation's own state files still do, in the main and every linked git dir.
-async function busyElsewhere(commonDir: string, ref: string): Promise<boolean> {
+export async function busyElsewhere(
+	commonDir: string,
+	ref: string,
+): Promise<boolean> {
 	const linked = await readdir(join(commonDir, "worktrees")).catch(() => []);
 	const dirs = [
 		commonDir,
@@ -216,7 +220,22 @@ async function syncBaseRef(
 	const backup = `refs/clonelane/backups/${randomUUID()}`;
 	await git(workspace.path, ["update-ref", backup, head]);
 	if (await checkedElsewhere()) return skip("base-became-checked-out");
-	await git(workspace.path, ["update-ref", ref, state.baseHead, head]);
+	const id = await begin(state.commonDir, {
+		workspace: workspace.name,
+		path: workspace.path,
+		kind: "base-fast-forward",
+		ref,
+		from: head,
+		to: state.baseHead,
+		backup,
+	});
+	try {
+		await git(workspace.path, ["update-ref", ref, state.baseHead, head]);
+	} catch (error) {
+		await finish(state.commonDir, id, "failed");
+		throw error;
+	}
+	await finish(state.commonDir, id, "done", state.baseHead);
 	return {
 		action: "fast-forward",
 		reason: "unused-local-base",
@@ -306,6 +325,15 @@ async function syncOne(
 						backup,
 					};
 				}
+				const id = await begin(state.commonDir, {
+					workspace: workspace.name,
+					path: workspace.path,
+					kind: plan.action,
+					ref: `refs/heads/${state.branch}`,
+					from: state.head,
+					to: state.baseHead ?? "",
+					backup,
+				});
 				try {
 					if (plan.action === "fast-forward")
 						await git(workspace.path, [
@@ -329,8 +357,13 @@ async function syncOne(
 							"--no-verify",
 							state.baseHead ?? "",
 						]);
+					const tip = await git(workspace.path, ["rev-parse", "HEAD"]).catch(
+						() => undefined,
+					);
+					await finish(state.commonDir, id, "done", tip);
 					return { ...plan, result: "updated", backup };
 				} catch (error) {
+					await finish(state.commonDir, id, "failed");
 					if (plan.action !== "rebase")
 						return { ...plan, result: "failed", backup, ...failure(error) };
 					const aborted = await gitSucceeds(workspace.path, [

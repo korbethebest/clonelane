@@ -66,6 +66,16 @@ Only the **current feature branch** of each registered directory is rebased. Unc
 
 Before a branch update, Clonelane creates a recovery ref under `refs/clonelane/backups/`. The JSON result includes that ref. After a failed rebase it attempts `git rebase --abort`; a failure to abort is reported as requiring manual recovery. Create a rescue branch from the reported backup with ordinary Git, after inspecting the workspace. Backups are retained until you deliberately remove them.
 
+Every branch move is also recorded in a journal inside the clone's shared `.git` directory (`clonelane-journal.jsonl`, never committed):
+
+```bash
+clonelane history --group project          # moves, their backups and outcomes
+clonelane restore 1a2b3c4d5e6f7a8b --dry-run  # what a restore would do
+clonelane restore 1a2b3c4d5e6f7a8b            # move the branch back to its backup
+```
+
+`restore` moves a branch back only when it is still exactly where that move left it, the workspace has no uncommitted changes or Git operation in progress, and the backup ref is intact. Otherwise it refuses and says why. Git holds the branch's ref lock from that check until the move, so a commit made by another tool at the same moment fails instead of being dropped. It backs up the current tip first and is journaled itself, so a restore can be undone the same way. A move that started but never recorded an outcome (the process was killed) shows as **interrupted** in `status`, `history` and the desktop app.
+
 Clonelane serializes its own writes with a lock in the shared Git directory. Other Git clients and AI agents do **not** honor that lock. Stop concurrent writers before syncing. The tool rechecks the checkout before mutation, but cannot guarantee protection against a different process changing it at exactly the same time. A crash can leave a stale lock: inspect running processes before removing it.
 
 ## Share `.env` keys
@@ -164,7 +174,7 @@ Integration tests create local bare repositories, clones and linked worktrees un
 
 ## Next milestones
 
-1. Explicit workspace leases for cooperating tools, a recovery journal and better per-workspace failure reporting.
+1. Explicit workspace leases for cooperating tools, and a restore button in the desktop app.
 2. Reviewed, persisted sync policies and a background worker. No unattended rebase in this release.
 3. Environment profiles, layered overrides and a provider interface for an existing encrypted secret manager / OS keychain. No custom cryptography.
 4. TUI overview, optional editor integration and support for intentionally stacked feature branches.
