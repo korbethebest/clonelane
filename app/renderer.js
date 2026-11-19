@@ -772,7 +772,11 @@ function renderSync({ results, applied }) {
 										el("p", { className: "backup" }, `Backup: ${ref}`),
 									),
 								item.error &&
-									el("p", { className: "error" }, `Failed (${item.error})`),
+									el(
+										"p",
+										{ className: "error", title: item.error },
+										item.message ?? `Failed (${item.error})`,
+									),
 							),
 						),
 					),
@@ -889,6 +893,14 @@ $("#fetch").addEventListener("click", async () => {
 		syncPreview = null;
 	}
 	await refresh();
+	// Each workspace is fetched on its own; name the ones that failed and why.
+	const failed = fetched.filter((item) => item.result === "failed");
+	if (failed.length)
+		showError("footer-alert", {
+			message: `Fetch failed for ${failed.map((item) => `${item.name}: ${item.message}`).join(" ")}`,
+			code: failed.map((item) => item.error).join(", "),
+		});
+	else say(`Fetched ${plural(fetched.length, "workspace")}.`);
 });
 
 $("#browse").addEventListener("click", async () => {

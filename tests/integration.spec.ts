@@ -16,7 +16,13 @@ import {
 import { delimiter, dirname, join, relative, resolve, sep } from "node:path";
 import { describe, type TestContext, test } from "node:test";
 import { parseEnv, promisify } from "node:util";
-import { findGit, git, hooksPath, repositoryIdentity } from "../src/git.ts";
+import {
+	describeGitFailure,
+	findGit,
+	git,
+	hooksPath,
+	repositoryIdentity,
+} from "../src/git.ts";
 import {
 	addWorkspace,
 	applyEnv,
@@ -658,6 +664,99 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 			{ code: "UNSAFE_FILE" },
 		);
 		assert.equal(await readFile(outside, "utf8"), "TOKEN=outside\n");
+	});
+
+	test("Git failures are explained by kind and never echo Git's output", () => {
+		const cases: [string, string][] = [
+			[
+				"fatal: Authentication failed for 'https://user:SECRET@host/r.git/'",
+				"GIT_AUTH",
+			],
+			[
+				"ssh: Could not resolve hostname host: Name or service not known",
+				"GIT_NETWORK",
+			],
+			["fatal: couldn't find remote ref refs/heads/main", "GIT_REMOTE_REF"],
+			[
+				"fatal: 'SECRET/path' does not appear to be a git repository",
+				"GIT_REMOTE_MISSING",
+			],
+			[
+				"fatal: Unable to create 'C:/w/.git/index.lock': File exists.",
+				"GIT_LOCKED",
+			],
+			[
+				"error: Your local changes to the following files would be overwritten by merge",
+				"GIT_LOCAL_CHANGES",
+			],
+			["something unexpected", "GIT_FAILED"],
+		];
+		for (const [output, code] of cases) {
+			const [actual, message] = describeGitFailure(output);
+			assert.equal(actual, code, output);
+			assert.ok(
+				!message.includes("SECRET"),
+				"message must not echo Git output",
+			);
+		}
+	});
+
+	test("one failing fetch or lock is reported per workspace without stopping the others", async (t) => {
+		const f = await fixture(t);
+		const missingBase = await registerWorkspace({
+			name: "missing-base",
+			path: f.second,
+			group: "other",
+			base: "no-such-branch",
+		});
+		await f.publish();
+		const fetched = await fetchWorkspaces([f.a, missingBase]);
+		assert.deepEqual(
+			fetched.map((item) => [item.name, item.result, item.error ?? ""]),
+			[
+				["first", "fetched", ""],
+				["missing-base", "failed", "GIT_REMOTE_REF"],
+			],
+		);
+		assert.ok(fetched[1]?.message);
+		const [ok, skipped] = await syncWorkspaces([f.a, missingBase], {
+			fetch: true,
+		});
+		assert.equal(ok?.result, "updated");
+		assert.equal(skipped?.reason, "fetch-failed");
+		assert.equal(skipped?.error, "GIT_REMOTE_REF");
+		// A stale lock from another Git process is named, not just "Git failed".
+		await f.publish("lock.txt");
+		await fetchWorkspaces([f.a]);
+		await writeFile(join(f.first, ".git", "index.lock"), "");
+		const [locked] = await syncWorkspaces([f.a]);
+		assert.equal(locked?.result, "failed");
+		assert.equal(locked?.error, "GIT_LOCKED");
+		assert.match(locked?.message ?? "", /lock/);
+	});
+
+	test("CLI status reports a missing folder and still shows the other workspaces", async (t) => {
+		const f = await fixture(t);
+		const config = join(f.root, "registry.json");
+		await addWorkspace(config, { name: "a", path: f.first, group: "demo" });
+		await addWorkspace(config, { name: "b", path: f.second, group: "demo" });
+		await rm(f.second, { recursive: true, force: true });
+		const outcome = await exec(
+			process.execPath,
+			["src/cli.ts", "status", "--json", "--config", config],
+			{ cwd: resolve("."), encoding: "utf8" },
+		).then(
+			(result) => ({ code: 0, stdout: result.stdout }),
+			(error: { code: number; stdout: string }) => error,
+		);
+		assert.equal(outcome.code, 1);
+		const states = JSON.parse(outcome.stdout) as {
+			workspace: { name: string };
+			branch?: string;
+			error?: { code: string };
+		}[];
+		assert.equal(states[0]?.branch, "master");
+		assert.equal(states[1]?.error?.code, "GIT_NO_FOLDER");
 	});
 
 	test("CLI rejects env apply --dry-run rather than silently writing", async (t) => {
