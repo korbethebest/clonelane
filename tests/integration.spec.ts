@@ -689,6 +689,14 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 				"error: Your local changes to the following files would be overwritten by merge",
 				"GIT_LOCAL_CHANGES",
 			],
+			["CONFLICT (content): Merge conflict in a.txt", "GIT_CONFLICT"],
+			["error: could not apply 1a2b3c4... feature", "GIT_CONFLICT"],
+			// Not conflicts or credential problems, despite the words they contain.
+			[
+				"error: pathspec 'conflict-notes' did not match any file(s)",
+				"GIT_FAILED",
+			],
+			["error: unable to unlink old 'a.txt': Access is denied.", "GIT_FAILED"],
 			["something unexpected", "GIT_FAILED"],
 		];
 		for (const [output, code] of cases) {
@@ -725,6 +733,20 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		assert.equal(ok?.result, "updated");
 		assert.equal(skipped?.reason, "fetch-failed");
 		assert.equal(skipped?.error, "GIT_REMOTE_REF");
+		// Results pair by position: a repeated name (a hand-edited registry) never mixes them.
+		const twin = { ...missingBase, name: "first" };
+		const paired = await fetchWorkspaces([f.a, twin]);
+		assert.deepEqual(
+			paired.map((item) => item.result),
+			["fetched", "failed"],
+		);
+		// Output past the read limit is named as such, not as a timeout.
+		await writeFile(join(f.first, "big.bin"), "x".repeat(9 * 1024 * 1024));
+		const blob = await run(f.first, ["hash-object", "-w", "big.bin"]);
+		await assert.rejects(git(f.first, ["cat-file", "-p", blob]), {
+			code: "GIT_OUTPUT_TOO_LARGE",
+		});
+		await rm(join(f.first, "big.bin"));
 		// A stale lock from another Git process is named, not just "Git failed".
 		await f.publish("lock.txt");
 		await fetchWorkspaces([f.a]);

@@ -93,6 +93,10 @@ export async function git(path: string, args: string[]): Promise<string> {
 					GIT_TERMINAL_PROMPT: "0",
 					GCM_INTERACTIVE: "never",
 					GIT_EDITOR: "true",
+					// Untranslated messages, so failures can be matched below. Data such as
+					// paths and commit subjects is unaffected.
+					LC_ALL: "C",
+					LANGUAGE: "C",
 				},
 			},
 		);
@@ -103,6 +107,12 @@ export async function git(path: string, args: string[]): Promise<string> {
 			code?: unknown;
 			stderr?: unknown;
 		};
+		// Node also sets `killed` when it stops a child for exceeding maxBuffer.
+		if (failure.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER")
+			fail(
+				"GIT_OUTPUT_TOO_LARGE",
+				"Git produced more output than Clonelane reads (8 MiB). Run the same step with Git directly.",
+			);
 		if (failure.killed)
 			fail(
 				"GIT_TIMEOUT",
@@ -120,7 +130,7 @@ export async function git(path: string, args: string[]): Promise<string> {
 // only matched against known failure kinds to tell the user what to do next.
 const failures: [RegExp, string, string][] = [
 	[
-		/could not read (username|password)|authentication failed|permission denied \(publickey|terminal prompts disabled|access denied|returned error: 40[13]|http 40[13]/i,
+		/could not read (username|password)|authentication failed|permission denied \(publickey|terminal prompts disabled|returned error: 40[13]|http 40[13]/i,
 		"GIT_AUTH",
 		"The remote rejected the credentials. Check that this account can fetch the repository with Git.",
 	],
@@ -154,7 +164,12 @@ const failures: [RegExp, string, string][] = [
 		"GIT_LOCAL_CHANGES",
 		"Local files would be overwritten. Commit or move them first.",
 	],
-	[/conflict/i, "GIT_CONFLICT", "Git stopped on a conflict."],
+	// Git's own conflict reports, not any line that happens to contain the word.
+	[
+		/^CONFLICT \(|could not apply [0-9a-f]+|automatic merge failed/m,
+		"GIT_CONFLICT",
+		"Git stopped on a conflict.",
+	],
 ];
 
 export function describeGitFailure(output: string): [string, string] {
