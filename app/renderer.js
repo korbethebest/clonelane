@@ -75,6 +75,8 @@ const controls = ["#refresh", "#fetch", "#group"];
 // Locks the UI while any action runs (a History panel can still start one, so count
 // them); errors appear next to the control that caused them.
 let pending = 0;
+// The automatic fetch in progress, if any (see autoFetch).
+let backgroundFetch = null;
 async function call(name, input, { busy, alert = "footer-alert" } = {}) {
 	pending++;
 	const focused = document.activeElement;
@@ -82,8 +84,14 @@ async function call(name, input, { busy, alert = "footer-alert" } = {}) {
 	for (const id of controls) $(id).disabled = true;
 	showError(alert, null);
 	showError("footer-alert", null);
-	if (busy) say(busy, true);
 	try {
+		// Never run beside an automatic fetch: both could take the same Git ref locks.
+		if (backgroundFetch) {
+			say("Waiting for the automatic fetch to finish…", true);
+			await backgroundFetch;
+			say();
+		}
+		if (busy) say(busy, true);
 		const response = await window.clonelane.call(name, input);
 		if (busy) say();
 		if (!response.ok) {
@@ -1230,5 +1238,90 @@ $("#guide-toggle").addEventListener("click", () => {
 	render();
 	if (guideShown()) $("#guide-title").scrollIntoView({ block: "nearest" });
 });
+
+// Automatic fetch: while the app is open, fetch remote once the shown workspaces' last
+// fetch is 15 minutes old. It never locks the UI; an action started meanwhile waits for
+// it in call(). A failed attempt is retried after the same interval, not every minute.
+const AUTO_FETCH = "clonelane.autoFetch:v1";
+const INTERVAL = 15 * 60 * 1000;
+let lastAttempt = 0;
+const autoFetchOn = () => recall(AUTO_FETCH) !== "off";
+$("#auto-fetch").checked = autoFetchOn();
+$("#auto-fetch").addEventListener("change", (event) =>
+	remember(AUTO_FETCH, event.currentTarget.checked ? "on" : "off"),
+);
+
+const readable = () => (view.statuses ?? []).filter((state) => !state.error);
+const baseHeads = () =>
+	new Map(readable().map((state) => [state.workspace.path, state.baseHead]));
+
+function fetchDue(now = Date.now()) {
+	const states = readable();
+	if (!states.length || now - lastAttempt < INTERVAL) return false;
+	return (
+		now - Math.min(...states.map((state) => state.lastFetch ?? 0)) >= INTERVAL
+	);
+}
+
+// The last failure shown, so a fetch that keeps failing is not announced every time.
+let lastFailure = "";
+async function autoFetch() {
+	if (!autoFetchOn() || pending > 0 || backgroundFetch || !fetchDue()) return;
+	lastAttempt = Date.now();
+	const scope = group();
+	const before = baseHeads();
+	const failure = (error) => ({ ok: false, message: String(error) });
+	backgroundFetch = (async () => {
+		// Never rejects: actions waiting on it in call() must still run.
+		const fetched = await window.clonelane
+			.call("fetch", { group: scope })
+			.catch(failure);
+		// Read status inside the same wait, so no action can see it half-updated.
+		const statuses = await window.clonelane
+			.call("status", { group: scope })
+			.catch(failure);
+		return { fetched, statuses };
+	})().finally(() => {
+		backgroundFetch = null;
+	});
+	const { fetched, statuses } = await backgroundFetch;
+	const current = group() === scope;
+	if (current && statuses.ok) view.statuses = statuses.data;
+	const moved = readable().filter(
+		(state) =>
+			before.has(state.workspace.path) &&
+			before.get(state.workspace.path) !== state.baseHead,
+	);
+	// New remote commits make an earlier preview stale, as after Fetch remote. When the
+	// new heads cannot be compared (another group, failed read), assume they moved.
+	const comparable = current && statuses.ok;
+	const anyFetched =
+		fetched.ok && fetched.data.some((item) => item.result === "fetched");
+	if (
+		(comparable ? moved.length > 0 : anyFetched) &&
+		view.sync &&
+		!view.sync.applied
+	) {
+		view.sync = null;
+		syncPreview = null;
+	}
+	render();
+	const failed = fetched.ok
+		? fetched.data.filter((item) => item.result === "failed")
+		: [];
+	const problem =
+		!fetched.ok || failed.length
+			? `Automatic fetch failed${failed.length ? ` for ${failed.map((item) => item.name).join(", ")}` : ""}. Click Fetch remote to see why.`
+			: "";
+	// An action that waited for this fetch owns the status bar now.
+	if (pending > 0 || !current) return;
+	if (problem && problem !== lastFailure) say(problem);
+	else if (comparable && moved.length)
+		say(
+			`Fetched automatically: new commits on ${[...new Set(moved.map((state) => baseRef(state.workspace)))].join(", ")}.`,
+		);
+	lastFailure = problem;
+}
+setInterval(autoFetch, 60 * 1000);
 
 refresh();
