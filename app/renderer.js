@@ -511,10 +511,13 @@ async function loadMoves(details, state) {
 				"Could not read the branch moves. Close and reopen to retry.";
 		return;
 	}
-	// Newest first: once a branch has a later applied move, older ones would only be refused.
+	// Newest first: once a branch has a later move that can be undone, older ones would only
+	// be refused. A rebase that stopped before recording its result cannot be undone (the
+	// core refuses it), so it neither gets a button nor hides the older moves.
 	const moved = new Set();
 	const restorable = (operation) =>
-		["done", "interrupted"].includes(operation.state) &&
+		(operation.state === "done" ||
+			(operation.state === "interrupted" && operation.kind !== "rebase")) &&
 		!moved.has(operation.ref) &&
 		moved.add(operation.ref);
 	slot?.replaceWith(
