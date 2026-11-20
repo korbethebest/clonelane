@@ -32,14 +32,17 @@ import {
 	inspectWorkspace,
 	listOperations,
 	planEnv,
+	readLease,
 	readRegistry,
 	registerWorkspace,
+	releaseLease,
 	removeProfile,
 	removeWorkspace,
 	restoreOperation,
 	saveProfile,
 	syncEnvProfile,
 	syncWorkspaces,
+	takeLease,
 	updateWorkspace,
 } from "../src/index.ts";
 import { begin } from "../src/journal.ts";
@@ -414,6 +417,85 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		]);
 		assert.equal(initial?.author, "Clonelane Test");
 		assert.ok((initial?.time ?? 0) > 0);
+	});
+
+	test("a lease keeps sync, env and restore away from a workspace unless acting as its holder", async (t) => {
+		const f = await fixture(t);
+		const lease = await takeLease(f.b, {
+			holder: "agent-1",
+			note: "feat/login",
+		});
+		assert.equal((await inspectWorkspace(f.b)).lease?.holder, "agent-1");
+		await assert.rejects(takeLease(f.b, { holder: "someone" }), {
+			code: "LEASED",
+		});
+		// Renewing keeps since and moves until.
+		const renewed = await takeLease(f.b, { holder: "agent-1", minutes: 600 });
+		assert.equal(renewed.since, lease.since);
+		assert.ok(Date.parse(renewed.until) > Date.parse(lease.until));
+
+		await f.publish();
+		const synced = await syncWorkspaces([f.a, f.b], { fetch: true });
+		assert.deepEqual(
+			synced.map((item) => [item.name, item.result, item.reason]),
+			[
+				["first", "updated", "base-branch"],
+				["second", "skipped", "leased"],
+			],
+		);
+		const mine = await syncWorkspaces([f.b], { as: "agent-1" });
+		assert.equal(mine[0]?.result, "updated");
+
+		await writeFile(join(f.first, ".env"), "TOKEN=x\n");
+		const options = { file: ".env", keys: "all" as const };
+		await assert.rejects(planEnv(f.a, f.b, options), { code: "LEASED" });
+		await planEnv(f.a, f.b, { ...options, as: "agent-1" });
+
+		const [operation] = await listOperations(f.b);
+		assert.ok(operation);
+		assert.equal(
+			(await restoreOperation(f.b, operation.id, { dryRun: true })).reason,
+			"leased",
+		);
+		assert.equal(
+			(
+				await restoreOperation(f.b, operation.id, {
+					dryRun: true,
+					as: "agent-1",
+				})
+			).result,
+			"planned",
+		);
+
+		await assert.rejects(releaseLease(f.b, { holder: "someone" }), {
+			code: "LEASED",
+		});
+		assert.equal(
+			(await releaseLease(f.b, { holder: "agent-1" }))?.holder,
+			"agent-1",
+		);
+		assert.equal((await inspectWorkspace(f.b)).lease, null);
+
+		// A lapsed lease is gone; an unreadable one is held by "unknown" until forced.
+		const gitDir = join(f.second, ".git");
+		const file = join(gitDir, "clonelane-lease.json");
+		await writeFile(
+			file,
+			JSON.stringify({
+				holder: "old",
+				since: "x",
+				until: "2000-01-01T00:00:00Z",
+			}),
+		);
+		assert.equal(await readLease(gitDir), null);
+		await writeFile(file, "not json");
+		assert.equal((await readLease(gitDir))?.holder, "unknown");
+		await assert.rejects(releaseLease(f.b), { code: "LEASED" });
+		await releaseLease(f.b, { force: true });
+		assert.equal(await readLease(gitDir), null);
+		await assert.rejects(takeLease(f.b, { holder: "bad name" }), {
+			code: "LEASE_HOLDER",
+		});
 	});
 
 	test("dry run does not fetch or create recovery refs; explicit fetch then fast-forward updates master", async (t) => {

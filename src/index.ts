@@ -7,6 +7,13 @@ export type {
 export { applyEnv, planEnv, syncEnvProfile } from "./env.ts";
 export { ClonelaneError } from "./errors.ts";
 export type { Operation } from "./journal.ts";
+export type { Lease } from "./lease.ts";
+export {
+	readLease,
+	releaseLease,
+	takeLease,
+	workspaceLease,
+} from "./lease.ts";
 export type { EnvProfile, Registry } from "./registry.ts";
 export {
 	addWorkspace,

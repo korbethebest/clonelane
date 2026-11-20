@@ -6,6 +6,7 @@ import { fail } from "./errors.ts";
 import { exists } from "./files.ts";
 import { git, repositoryIdentity, validBranch, validName } from "./git.ts";
 import { readOperations } from "./journal.ts";
+import { type Lease, readLease } from "./lease.ts";
 
 export interface Workspace {
 	name: string;
@@ -38,6 +39,8 @@ export interface WorkspaceStatus {
 	branches: BranchInfo[];
 	/** Clonelane moves in this workspace that started but never recorded an outcome. */
 	interrupted: number;
+	/** Who is using this workspace, if anyone (see takeLease). */
+	lease: Lease | null;
 }
 
 export async function registerWorkspace(input: {
@@ -117,7 +120,8 @@ async function identify(input: {
 	};
 }
 
-async function checkIdentity(
+/** Confirms the folder is still the registered repository; returns its .git dirs. */
+export async function checkIdentity(
 	workspace: Workspace,
 ): Promise<{ commonDir: string; gitDir: string }> {
 	const { workspace: actual, commonDir, gitDir } = await identify(workspace);
@@ -303,7 +307,7 @@ export async function inspectWorkspace(
 			return result;
 		})(),
 	]);
-	const [operation, operations] = await Promise.all([
+	const [operation, operations, lease] = await Promise.all([
 		Promise.all(
 			[
 				"MERGE_HEAD",
@@ -316,6 +320,7 @@ export async function inspectWorkspace(
 			].map((marker) => exists(join(gitDir, marker))),
 		).then((found) => found.some(Boolean)),
 		readOperations(commonDir),
+		readLease(gitDir),
 	]);
 	// Moves this workspace started but never finished: the process stopped midway.
 	// A later successful move of the same branch (from any worktree of this clone) means the
@@ -360,6 +365,7 @@ export async function inspectWorkspace(
 		baseBehind,
 		branches,
 		interrupted,
+		lease,
 	};
 }
 

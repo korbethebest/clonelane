@@ -6,6 +6,12 @@ import { parseArgs } from "node:util";
 import { applyEnv, planEnv, syncEnvProfile } from "./env.ts";
 import { ClonelaneError, fail } from "./errors.ts";
 import {
+	DEFAULT_MINUTES,
+	releaseLease,
+	takeLease,
+	workspaceLease,
+} from "./lease.ts";
+import {
 	addWorkspace,
 	readRegistry,
 	removeProfile,
@@ -31,8 +37,12 @@ const help = `Clonelane — keep your Git workspaces in the same lane.
                         [--targets b,c]
   clonelane env profile list | remove <profile>
   clonelane env sync <profile> [--dry-run] [--overwrite]
+  clonelane lease take <workspace> --holder <name> [--note "why"] [--minutes 120]
+  clonelane lease release <workspace> [--holder <name>] [--force]
+  clonelane lease list [--group <group>] [--json]
 
 Global: --config <file> (default: ~/.config/clonelane/registry.json), --help
+--as <holder> on sync, restore and env: act as that lease holder.
 
 status and sync --dry-run use cached remote refs and do not fetch.
 sync fetches the selected base before updating. No command pushes.
@@ -68,6 +78,11 @@ async function main(): Promise<void> {
 			keep: { type: "string", multiple: true },
 			prune: { type: "boolean" },
 			targets: { type: "string" },
+			holder: { type: "string" },
+			note: { type: "string" },
+			minutes: { type: "string" },
+			force: { type: "boolean" },
+			as: { type: "string" },
 		},
 	});
 	if (values.help || positionals.length === 0) {
@@ -113,7 +128,19 @@ async function main(): Promise<void> {
 							"prune",
 							...(argument === "apply" ? ["overwrite"] : []),
 						],
+		lease:
+			argument === "take"
+				? ["holder", "note", "minutes"]
+				: argument === "release"
+					? ["holder", "force"]
+					: ["group", "json"],
 	};
+	// A lease holder may act on its own leased workspaces; profiles store no holder.
+	if (
+		["sync", "restore"].includes(command ?? "") ||
+		(command === "env" && argument !== "profile")
+	)
+		allowed[command as string]?.push("as");
 	if (
 		Object.keys(values).some(
 			(key) =>
@@ -188,12 +215,42 @@ async function main(): Promise<void> {
 		return;
 	}
 	const registry = await readRegistry(config);
+	if (command === "lease" && (argument === "take" || argument === "release")) {
+		const name = positionals[2];
+		const workspace = registry.workspaces.find((item) => item.name === name);
+		if (positionals.length !== 3 || !workspace)
+			fail(
+				"USAGE",
+				`lease ${argument} requires one registered workspace name.`,
+			);
+		if (argument === "take") {
+			if (!values.holder) fail("USAGE", "lease take requires --holder.");
+			const minutes =
+				values.minutes === undefined ? DEFAULT_MINUTES : Number(values.minutes);
+			print({
+				workspace: workspace.name,
+				...(await takeLease(workspace, {
+					holder: values.holder,
+					note: values.note,
+					minutes,
+				})),
+			});
+			return;
+		}
+		const released = await releaseLease(workspace, {
+			holder: values.holder,
+			force: values.force,
+		});
+		print({ workspace: workspace.name, released });
+		return;
+	}
 	if (command === "env" && argument === "sync") {
 		if (positionals.length !== 3 || !positionals[2])
 			fail("USAGE", "env sync requires one profile name.");
 		const results = await syncEnvProfile(registry, positionals[2], {
 			dryRun: values["dry-run"],
 			overwrite: values.overwrite,
+			as: values.as,
 		});
 		print(results);
 		if (results.some((result) => result.error)) process.exitCode = 1;
@@ -226,6 +283,7 @@ async function main(): Promise<void> {
 			overwrite: values.overwrite,
 			publicKeys: values["public-keys"]?.split(","),
 			prune: values.prune,
+			as: values.as,
 		};
 		print(
 			await (argument === "apply" ? applyEnv : planEnv)(
@@ -268,9 +326,41 @@ async function main(): Promise<void> {
 			);
 		const result = await restoreOperation(owner, id, {
 			dryRun: values["dry-run"],
+			as: values.as,
 		});
 		print(result);
 		if (result.result === "refused") process.exitCode = 1;
+		return;
+	}
+	if (command === "lease") {
+		if (argument !== "list" || positionals.length !== 2)
+			fail("USAGE", "Use lease take, lease release or lease list.");
+		const rows = await Promise.all(
+			selectWorkspaces(registry, values.group).map(async (workspace) => {
+				try {
+					return {
+						workspace: workspace.name,
+						lease: await workspaceLease(workspace),
+					};
+				} catch (error) {
+					process.exitCode = 1;
+					return {
+						workspace: workspace.name,
+						error: error instanceof ClonelaneError ? error.code : "IO_ERROR",
+					};
+				}
+			}),
+		);
+		if (values.json) print(rows);
+		else
+			console.table(
+				rows.map((row) => ({
+					workspace: row.workspace,
+					holder: "lease" in row ? (row.lease?.holder ?? "") : `(${row.error})`,
+					note: "lease" in row ? (row.lease?.note ?? "") : "",
+					until: "lease" in row ? (row.lease?.until ?? "") : "",
+				})),
+			);
 		return;
 	}
 	if (positionals.length !== 1)
@@ -362,6 +452,7 @@ async function main(): Promise<void> {
 								"ahead of base": state.baseAhead,
 								"behind base": state.baseBehind,
 								interrupted: state.interrupted,
+								lease: state.lease?.holder ?? "",
 							},
 				),
 			);
@@ -393,6 +484,7 @@ async function main(): Promise<void> {
 			dryRun: values["dry-run"],
 			rebase: values.rebase,
 			fetch: !values["dry-run"],
+			as: values.as,
 		});
 		print(results);
 		if (results.some((result) => result.result === "failed"))

@@ -6,6 +6,7 @@ import { ClonelaneError } from "./errors.ts";
 import { withLock } from "./files.ts";
 import { git, gitSucceeds } from "./git.ts";
 import { begin, finish } from "./journal.ts";
+import { blocks } from "./lease.ts";
 import {
 	assertIdentity,
 	inspectWorkspace,
@@ -258,7 +259,13 @@ async function syncBaseRef(
  */
 export async function syncWorkspaces(
 	workspaces: Workspace[],
-	options: { dryRun?: boolean; rebase?: boolean; fetch?: boolean } = {},
+	options: {
+		dryRun?: boolean;
+		rebase?: boolean;
+		fetch?: boolean;
+		/** Act as this lease holder: its own leased workspaces are synced, not skipped. */
+		as?: string;
+	} = {},
 ): Promise<SyncResult[]> {
 	// A preview only reads, so workspaces are inspected side by side.
 	if (options.dryRun)
@@ -288,12 +295,24 @@ export async function syncWorkspaces(
 	return results;
 }
 
+// A workspace leased by someone else is left alone entirely, base ref included.
+const leased = (state: WorkspaceStatus): SyncResult => ({
+	name: state.workspace.name,
+	action: "skip",
+	reason: "leased",
+	head: state.head,
+	baseHead: state.baseHead,
+	branch: state.branch,
+	result: "skipped",
+});
+
 async function syncOne(
 	workspace: Workspace,
-	options: { dryRun?: boolean; rebase?: boolean },
+	options: { dryRun?: boolean; rebase?: boolean; as?: string },
 ): Promise<SyncResult> {
 	try {
 		const initial = await inspectWorkspace(workspace);
+		if (blocks(initial.lease, options.as)) return leased(initial);
 		if (options.dryRun) {
 			const [plan, baseUpdate] = await Promise.all([
 				checkedPlan(initial, options.rebase),
@@ -306,6 +325,7 @@ async function syncOne(
 			join(initial.commonDir, "clonelane.lock"),
 			async (): Promise<SyncResult> => {
 				const state = await inspectWorkspace(workspace);
+				if (blocks(state.lease, options.as)) return leased(state);
 				const plan = await checkedPlan(state, options.rebase);
 				baseUpdate = await syncBaseRef(state, false);
 				if (plan.action === "skip") return { ...plan, result: "skipped" };

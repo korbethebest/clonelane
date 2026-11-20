@@ -5,6 +5,7 @@ import { parseEnv } from "node:util";
 import { ClonelaneError, fail } from "./errors.ts";
 import { atomicWrite, readOptional, withLock } from "./files.ts";
 import { gitSucceeds } from "./git.ts";
+import { blocks, leasedMessage, workspaceLease } from "./lease.ts";
 import type { EnvProfile, Registry } from "./registry.ts";
 import {
 	assertIdentity,
@@ -20,6 +21,8 @@ export interface EnvOptions {
 	publicKeys?: string[];
 	/** Keys that stay local in the target: never added or overwritten, reported as "kept". */
 	keep?: string[];
+	/** Act as this lease holder: a target leased by anyone else is refused (LEASED). */
+	as?: string;
 	/**
 	 * With keys "all": also remove target keys the source does not define (state "remove"),
 	 * except kept ones. Applying a removal needs overwrite, like a conflict.
@@ -153,6 +156,9 @@ async function prepare(
 			"ENV_GROUP",
 			`"${source.name}" is in group "${source.group}" and "${target.name}" is in group "${target.group}". Keys are only copied between workspaces in the same group; move one of them into the other's group first.`,
 		);
+	const lease = await workspaceLease(target);
+	if (lease && blocks(lease, options.as))
+		fail("LEASED", leasedMessage(target.name, lease));
 	const from = await readEnv(source, options.file);
 	const to = await readEnv(target, options.file);
 	if (from.raw == null)
@@ -289,7 +295,7 @@ export interface ProfileResult {
 export async function syncEnvProfile(
 	registry: Registry,
 	which: string | EnvProfile,
-	options: { dryRun?: boolean; overwrite?: boolean } = {},
+	options: { dryRun?: boolean; overwrite?: boolean; as?: string } = {},
 ): Promise<ProfileResult[]> {
 	const profile =
 		typeof which === "string"
@@ -336,6 +342,7 @@ export async function syncEnvProfile(
 						? profile.keep[target.name]
 						: undefined,
 				overwrite: options.overwrite,
+				as: options.as,
 			});
 			return { target: target.name, plan };
 		} catch (error) {

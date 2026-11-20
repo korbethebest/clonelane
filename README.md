@@ -80,6 +80,21 @@ clonelane restore 1a2b3c4d5e6f7a8b            # move the branch back to its back
 
 Clonelane serializes its own writes with a lock in the shared Git directory. Other Git clients and AI agents do **not** honor that lock. Stop concurrent writers before syncing. The tool rechecks the checkout before mutation, but cannot guarantee protection against a different process changing it at exactly the same time. A crash can leave a stale lock: inspect running processes before removing it.
 
+## Leases: mark a workspace as in use
+
+When a person, a script or an agent is working in a clone, lease it so Clonelane leaves it alone:
+
+```sh
+clonelane lease take b --holder agent-1 --note "feat/login" --minutes 120
+clonelane lease list
+clonelane lease release b --holder agent-1
+```
+
+- While someone else holds a lease, `sync` skips that workspace entirely (`leased`, base ref included), and `env` and `restore` refuse it (`LEASED`). Pass `--as agent-1` to act as the holder on your own leased workspace.
+- The same holder taking it again renews it. A lease lapses on its own after `--minutes` (default 120, at most 7 days), so a holder that crashed never blocks forever. `lease release --force` clears someone else's.
+- A lease is per checkout (each worktree has its own), stored as `clonelane-lease.json` in that checkout's `.git` directory. It is advisory: Git, editors and other tools ignore it, and holder names are not authenticated.
+- `status` shows the holder; the library adds `takeLease()`, `releaseLease()`, `readLease()`, `workspaceLease()` and `WorkspaceStatus.lease`.
+
 ## Share `.env` keys
 
 ```sh
@@ -197,9 +212,8 @@ Integration tests create local bare repositories, clones and linked worktrees un
 
 ## Next milestones
 
-1. Explicit workspace leases for cooperating tools.
+1. Support for intentionally stacked feature branches.
 2. Reviewed, persisted sync policies and a background worker. No unattended rebase in this release.
-3. A provider interface for an existing encrypted secret manager / OS keychain, as a source for env profiles. No custom cryptography.
-4. TUI overview, optional editor integration and support for intentionally stacked feature branches.
+3. TUI overview and optional editor integration.
 
 MIT licensed. No telemetry and no automatic package publication.
