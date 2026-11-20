@@ -804,6 +804,18 @@ th {
 	text-align: right;
 }
 
+/* Branch moves: flush like the branch table; the action column hugs its button. */
+.moves th:first-child,
+.moves td:first-child {
+	padding-left: 0;
+}
+
+.moves td:last-child {
+	width: 1%;
+	white-space: nowrap;
+	text-align: right;
+}
+
 .none {
 	color: var(--muted);
 }

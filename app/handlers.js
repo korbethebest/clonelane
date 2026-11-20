@@ -15,9 +15,11 @@ import {
 	fetchWorkspaces,
 	historyGraph,
 	inspectWorkspace,
+	listOperations,
 	planEnv,
 	readRegistry,
 	removeWorkspace,
+	restoreOperation,
 	selectWorkspaces,
 	syncWorkspaces,
 	updateWorkspace,
@@ -60,6 +62,13 @@ export function createHandlers(config, { statusCache } = {}) {
 				await rename(temp, statusCache);
 			})
 			.catch(() => {});
+	};
+	const named = async (name) => {
+		const { workspaces } = await readRegistry(config);
+		const workspace = workspaces.find((item) => item.name === name);
+		if (!workspace)
+			throw new ClonelaneError("WORKSPACE", "Workspace is not registered.");
+		return workspace;
 	};
 	const pick = async (group) =>
 		selectWorkspaces(await readRegistry(config), group || undefined);
@@ -136,12 +145,16 @@ export function createHandlers(config, { statusCache } = {}) {
 			}
 		},
 		// History is read when its panel opens, not on every refresh.
-		graph: async ({ name }) => {
-			const { workspaces } = await readRegistry(config);
-			const workspace = workspaces.find((item) => item.name === name);
-			if (!workspace)
-				throw new ClonelaneError("WORKSPACE", "Workspace is not registered.");
-			return historyGraph(workspace);
+		graph: async ({ name }) => historyGraph(await named(name)),
+		// Branch moves Clonelane recorded for one workspace, newest first. Read-only.
+		operations: async ({ name }) => listOperations(await named(name)),
+		// Same checks as clonelane restore; a preview (dryRun) changes nothing.
+		restore: async ({ name, id, dryRun }) => {
+			if (!/^[0-9a-f]{16}$/.test(id ?? ""))
+				throw new ClonelaneError("USAGE", "Unknown operation id.");
+			return restoreOperation(await named(name), id, {
+				dryRun: dryRun === true,
+			});
 		},
 		register: (input) =>
 			addWorkspace(config, {

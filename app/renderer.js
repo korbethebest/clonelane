@@ -341,7 +341,7 @@ function workspaceStatus(state) {
 	if (state.dirty) items.push(["Uncommitted changes", "warn"]);
 	if (state.interrupted > 0)
 		items.push([
-			"An update was interrupted — run clonelane history to see its backup",
+			"An update was interrupted — open Branch moves to see its backup",
 			"warn",
 		]);
 	if (state.baseHead == null) items.push([`${ref} not fetched yet`, "warn"]);
@@ -471,7 +471,115 @@ function renderWorkspace(state) {
 				),
 				el("p", { className: "graph-slot empty" }, "Loading history…"),
 			),
+		!state.error &&
+			el(
+				"details",
+				{
+					dataset: { key: `${workspace.name}:moves` },
+					ontoggle: (event) => loadMoves(event.currentTarget, state),
+				},
+				el("summary", {}, "Branch moves"),
+				el(
+					"p",
+					{ className: "hint" },
+					"Every branch Clonelane moved, with a backup of where it was. Restore puts a branch back, only if nothing changed since.",
+				),
+				el("p", { className: "moves-slot empty" }, "Loading…"),
+			),
 	);
+}
+
+const moveKinds = {
+	"fast-forward": "Fast-forward",
+	rebase: "Rebase",
+	"base-fast-forward": "Base fast-forward",
+	restore: "Restore",
+};
+const short = (sha) => sha?.slice(0, 7) ?? "—";
+const branchName = (ref) => ref.slice("refs/heads/".length);
+
+// Read on first open, like the history graph.
+async function loadMoves(details, state) {
+	if (!details.open || details.dataset.loaded) return;
+	details.dataset.loaded = "true";
+	const operations = await call("operations", { name: state.workspace.name });
+	const slot = details.querySelector(".moves-slot");
+	if (!operations) {
+		delete details.dataset.loaded;
+		if (slot)
+			slot.textContent =
+				"Could not read the branch moves. Close and reopen to retry.";
+		return;
+	}
+	// Newest first: once a branch has a later move that can be undone, older ones would only
+	// be refused. A rebase that stopped before recording its result cannot be undone (the
+	// core refuses it), so it neither gets a button nor hides the older moves.
+	const moved = new Set();
+	const restorable = (operation) =>
+		(operation.state === "done" ||
+			(operation.state === "interrupted" && operation.kind !== "rebase")) &&
+		!moved.has(operation.ref) &&
+		moved.add(operation.ref);
+	slot?.replaceWith(
+		operations.length
+			? table(
+					["When", "Branch", "Move", "From → to", "State", ""],
+					operations.map((operation) => [
+						el(
+							"span",
+							{ title: operation.time },
+							ago(Date.parse(operation.time)),
+						),
+						pill("local", branchName(operation.ref)),
+						moveKinds[operation.kind] ?? operation.kind,
+						el(
+							"code",
+							{},
+							`${short(operation.from)} → ${short(operation.tip ?? operation.to)}`,
+						),
+						operation.state,
+						// The core still checks everything; this only hides the hopeless ones.
+						restorable(operation) &&
+							el(
+								"button",
+								{
+									type: "button",
+									className: "small",
+									onclick: () => restoreMove(state.workspace, operation),
+								},
+								"Restore…",
+							),
+					]),
+					"moves",
+				)
+			: el("p", { className: "empty" }, "No branch moves recorded yet."),
+	);
+}
+
+// Preview first (changes nothing), then ask, then restore with the same checks again.
+async function restoreMove(workspace, operation) {
+	const input = { name: workspace.name, id: operation.id };
+	const plan = await call("restore", { ...input, dryRun: true });
+	if (!plan) return;
+	const branch = branchName(plan.ref);
+	if (plan.result === "refused") {
+		showError("footer-alert", { message: plan.message, code: plan.reason });
+		return;
+	}
+	if (
+		!confirm(
+			`Move ${branch} in ${workspace.name} from ${short(plan.from)} back to ${short(plan.to)}? Its current commit is backed up first, so this can be undone too.`,
+		)
+	)
+		return;
+	const result = await call("restore", input, {
+		busy: `Restoring ${branch}…`,
+	});
+	if (!result) return;
+	await refresh();
+	if (result.result === "refused")
+		showError("footer-alert", { message: result.message, code: result.reason });
+	else say(`Restored ${branch} in ${workspace.name} to ${short(result.to)}.`);
 }
 
 // Read on first open; a refresh rebuilds the card, so the next open reads again.

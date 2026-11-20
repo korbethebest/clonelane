@@ -7,6 +7,7 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Added
 
 - **Auto-fetch** in the desktop app, on by default: while the app is open, it fetches remote once the shown workspaces were last fetched 15 or more minutes ago, then re-reads their status. The window stays usable; an action started meanwhile waits for the fetch to finish. New remote commits clear an unapplied sync preview, as **Fetch remote** does. Turn it off with the **Auto-fetch** checkbox in the header.
+- **Branch moves** on each workspace card in the desktop app: the recovery journal (`clonelane history`) with a **Restore…** button on each branch's latest move. It checks first without changing anything, asks for confirmation, then restores with the same safeguards as `clonelane restore`; a refusal shows its reason. The interrupted-update warning now points there.
 
 ## [0.2.0] - 2026-11-20
 
