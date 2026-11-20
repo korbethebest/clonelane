@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- **Auto-fetch** in the desktop app, on by default: while the app is open, it fetches remote once the shown workspaces were last fetched 15 or more minutes ago, then re-reads their status. The window stays usable; an action started meanwhile waits for the fetch to finish. New remote commits clear an unapplied sync preview, as **Fetch remote** does. Turn it off with the **Auto-fetch** checkbox in the header.
+
 ## [0.2.0] - 2026-11-20
 
 ### Added
