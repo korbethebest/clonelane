@@ -996,7 +996,10 @@ const writtenText = {
 	remove: "removed",
 };
 
+// Keys that need no change fold into one line, so the table shows only what happens.
 function renderEnv(plan, written = false) {
+	const changed = plan.changes.filter((change) => change.state !== "same");
+	const same = plan.changes.filter((change) => change.state === "same");
 	return [
 		el(
 			"p",
@@ -1004,22 +1007,43 @@ function renderEnv(plan, written = false) {
 			`${plan.source} → ${plan.target} `,
 			el("code", {}, plan.file),
 		),
-		table(
-			["Key", "Change"],
-			plan.changes.map((change) => [
-				[
-					el("code", {}, change.key),
-					/^(VITE_|NEXT_PUBLIC_|PUBLIC_)/.test(change.key) &&
-						el("span", { className: "none" }, " browser-exposed"),
-				],
+		changed.length > 0 &&
+			table(
+				["Key", "Change"],
+				changed.map((change) => [
+					[
+						el("code", {}, change.key),
+						/^(VITE_|NEXT_PUBLIC_|PUBLIC_)/.test(change.key) &&
+							el("span", { className: "none" }, " browser-exposed"),
+					],
+					el(
+						"span",
+						{ className: `state ${change.state}` },
+						(written ? writtenText : stateText)[change.state] ?? change.state,
+					),
+				]),
+			),
+		same.length > 0 &&
+			el(
+				"details",
+				{ className: "same-keys" },
 				el(
-					"span",
-					{ className: `state ${change.state}` },
-					(written ? writtenText : stateText)[change.state] ?? change.state,
+					"summary",
+					{},
+					changed.length
+						? `${plural(same.length, "other key")} already the same`
+						: `All ${plural(same.length, "key")} already the same`,
 				),
-			]),
-		),
-	];
+				el(
+					"p",
+					{ className: "key-list" },
+					same.flatMap((change, index) => [
+						index > 0 && ", ",
+						el("code", {}, change.key),
+					]),
+				),
+			),
+	].filter(Boolean);
 }
 
 // Env sharing: one source, then every other workspace of its group as a checkbox (all
@@ -1104,6 +1128,7 @@ function renderProfiles() {
 					"button",
 					{
 						type: "button",
+						className: "small",
 						ariaLabel: `Open profile ${profile.name}`,
 						onclick: () => openProfile(profile),
 					},

@@ -83,7 +83,7 @@
 					<div class="guide-head">
 						<h2 id="guide-title" tabindex="-1">Get started</h2>
 						<span id="guide-progress" class="guide-progress" aria-live="polite"></span>
-						<button id="guide-hide" type="button" class="link">Hide guide</button>
+						<button id="guide-hide" type="button" class="quiet small">Hide guide</button>
 					</div>
 					<p class="guide-lede">
 						Clonelane keeps every clone of a repository in step. It never pushes, and it backs up
@@ -169,10 +169,6 @@
 							All keys in the source file
 						</label>
 						<label class="inline">
-							<input type="checkbox" name="prune" />
-							Also remove keys the source doesn't have
-						</label>
-						<label class="inline">
 							<input type="radio" name="scope" value="selected" />
 							Only these keys
 						</label>
@@ -184,6 +180,10 @@
 							aria-label="Keys to copy"
 							placeholder="API_URL, API_TOKEN"
 						/>
+						<label class="inline prune">
+							<input type="checkbox" name="prune" />
+							Also remove keys the source doesn't have (all keys only)
+						</label>
 					</fieldset>
 					<details class="more wide">
 						<summary>More options</summary>

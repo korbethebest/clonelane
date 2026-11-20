@@ -30,6 +30,9 @@
 	--space-4: 16px;
 	--space-5: 20px;
 	--space-6: 24px;
+	/* Control heights: fields and buttons share one; row actions use the small one. */
+	--control: 36px;
+	--control-sm: 28px;
 	font:
 		14px / 1.5 system-ui,
 		"Segoe UI",
@@ -136,12 +139,22 @@ select {
 	color: inherit;
 }
 
+/* Buttons: one shape, two sizes. Default (36px) for form and section actions, .small
+   (28px) for actions inside a row or card head. Variants change colour only:
+   .primary (one per action group), .danger (destructive), .quiet (secondary, text-like). */
 button {
 	position: relative;
-	padding: var(--space-2) var(--space-4);
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: var(--space-2);
+	min-height: var(--control);
+	padding: 0 var(--space-4);
+	line-height: 20px;
 	border: 1px solid var(--line);
 	border-radius: 6px;
 	background: var(--panel);
+	white-space: nowrap;
 	cursor: pointer;
 }
 
@@ -226,6 +239,14 @@ select {
 	border-radius: 6px;
 	background: var(--bg);
 	min-width: 0;
+}
+
+/* Text fields and selects line up with the buttons beside them. */
+input:not([type="checkbox"], [type="radio"]),
+select {
+	min-height: var(--control);
+	padding: 0 var(--space-3);
+	line-height: 20px;
 }
 
 input::placeholder {
@@ -357,9 +378,9 @@ details#register-panel {
 }
 
 button.small {
-	padding: 2px var(--space-3);
-	font-size: 12px;
-	color: var(--muted);
+	min-height: var(--control-sm);
+	padding: 0 var(--space-3);
+	font-size: 13px;
 }
 
 button.danger {
@@ -906,23 +927,6 @@ button.quiet[aria-expanded="true"] {
 	color: var(--text);
 }
 
-/* An action that reads as text. */
-button.link {
-	padding: 0;
-	border: 0;
-	background: none;
-	color: var(--muted);
-	font-size: 13px;
-	text-decoration: underline;
-	text-underline-offset: 3px;
-	text-decoration-color: color-mix(in srgb, var(--muted) 45%, transparent);
-}
-
-button.link:hover:not(:disabled) {
-	color: var(--text);
-	text-decoration-color: currentColor;
-}
-
 /* First-run guide: three real steps, each checked off by what the user actually did. */
 .guide {
 	margin: var(--space-4) 0;
@@ -940,7 +944,7 @@ button.link:hover:not(:disabled) {
 }
 
 #guide-title {
-	font-size: 16px;
+	font-size: 15px;
 	font-weight: 600;
 }
 
@@ -950,7 +954,7 @@ button.link:hover:not(:disabled) {
 	font-variant-numeric: tabular-nums;
 }
 
-.guide-head button.link {
+.guide-head button {
 	margin-left: auto;
 }
 
@@ -1174,4 +1178,26 @@ button.link:hover:not(:disabled) {
 
 .target-row label.keep:has(input:disabled) {
 	opacity: 0.5;
+}
+
+/* Unchanged keys in a preview: one line, names on demand. */
+.same-keys {
+	margin-top: var(--space-2);
+	color: var(--muted);
+	font-size: 13px;
+}
+
+.same-keys .key-list {
+	margin-top: var(--space-2);
+	line-height: 1.8;
+	overflow-wrap: anywhere;
+}
+
+/* A sub-option of "All keys": its own line under the choice. */
+fieldset.scope label.prune {
+	flex-basis: 100%;
+}
+
+#profiles {
+	margin-bottom: var(--space-6);
 }
