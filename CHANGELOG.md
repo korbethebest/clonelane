@@ -4,6 +4,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-20
+
 ### Added
 
 - Env profiles: `clonelane env profile save|list|remove` saves a named share (source workspace, file, keys, public-key acknowledgement) in the registry, key names only. `clonelane env sync <profile> [--dry-run] [--overwrite]` plans or writes every other workspace in the source's group, one at a time; a failing target is reported without stopping the others.
@@ -15,6 +17,9 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Changed
 
 - Renaming a workspace updates the env profiles that name it; removing a workspace that is a profile's source, or moving it to another group, is refused (`PROFILE_SOURCE`). A workspace that leaves a profile's group loses its kept keys there.
+- The desktop app uses one control scale: buttons and fields are 36px, actions inside a row or card head are a 28px small size, and the underlined text button is gone. Env previews fold unchanged keys into one line and list only what changes.
+- Help text in the desktop app moved from paragraphs into popovers behind a **?** button: hover to read, click to keep it open.
+- With several groups, the desktop app's env source list is sectioned by group and follows the header's group filter.
 
 ## [0.3.0] - 2026-11-20
 
@@ -64,7 +69,8 @@ First public release.
 - Git is launched by absolute path from absolute `PATH` entries only, so a `git.exe` in a working tree never runs in place of Git, even when `PATH` contains an empty or relative entry.
 - Credentials in remote URLs, including remote-helper URLs (`<transport>::<address>`), are never stored or printed.
 
-[Unreleased]: https://github.com/korbethebest/clonelane/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/korbethebest/clonelane/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/korbethebest/clonelane/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/korbethebest/clonelane/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/korbethebest/clonelane/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/korbethebest/clonelane/releases/tag/v0.1.0
