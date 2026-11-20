@@ -96,7 +96,7 @@ clonelane env apply --source a --target b --keys API_URL,API_TOKEN --overwrite
 Both workspaces must be registered in the same group. The selected filename defaults to `.env`; `--file .env.development` is supported. Directory components and arbitrary filenames are rejected.
 
 - Choose `--all-keys` or `--keys` explicitly; a missing selection is an error, never an implicit "all".
-- Keys that exist only in the target (or are not selected) remain local, such as `PORT` or a test account. Nothing is deleted.
+- Keys that exist only in the target (or are not selected) remain local, such as `PORT` or a test account. Nothing is deleted unless you ask for `--prune` (below).
 - Preview shows names and `add` / `same` / `conflict`, never values or value hashes.
 - Different existing values block application unless `--overwrite` is explicit.
 - Missing source keys fail the whole operation for that target; no implicit deletion.
@@ -127,8 +127,9 @@ clonelane env profile list
 clonelane env profile remove dev
 ```
 
-- Targets are every other workspace in the source's group, at the time you run `env sync`.
+- Targets are every other workspace in the source's group, at the time you run `env sync`, or only those named with `--targets b,c`. A named target that leaves the group is dropped from the list; a list left empty fails rather than widening to the whole group.
 - Layers, highest first: a target's kept keys (`--keep <workspace>:KEY,…`, repeat per workspace) → the source's values → keys only the target has. Kept keys are never added or overwritten and show as `kept`.
+- `--prune` (with `--all-keys`, on `env plan|apply` or saved in a profile) also removes target keys the source does not define, so the targets mirror the source. They show as `remove`, and like conflicts they are only applied with `--overwrite`. Kept keys are never removed, and an empty source file is refused rather than emptying the targets.
 - Each target is planned and written on its own, with all the rules above. A conflict or error in one target is reported in its result and does not stop the others; the exit code is 1 if any target failed.
 - `--keys`, `--public-keys` and `--file` work as for `env plan`, and are checked when the profile is saved. Browser-exposed keys need `--public-keys` even if some targets keep them, because the other targets (and workspaces that join the group later) receive them. With `--keys`, kept keys must be among them.
 - `env sync --dry-run` takes no `--overwrite` and, like `env plan`, exits 0 when it finds conflicts.
@@ -148,7 +149,7 @@ pnpm app
 pnpm app --config=/path/to/registry.json
 ```
 
-An Electron window over the same core: a first-run guide (reopen it from **Guide**), workspace overview with every local branch and a commit graph, **Branch moves** per workspace (the recovery journal, with **Restore…**: a dry-run check, a confirmation, then the same restore as `clonelane restore`), register (folder picker), rename / regroup / remove (registry only; folders are never touched), **Reload local** (re-read Git state on disk, no network), **Fetch remote** (download the base branch), **Auto-fetch** (on by default: fetch remote every 15 minutes while the app is open, without locking the window; actions started meanwhile wait for it), sync preview → apply, and env plan → apply. It uses the CLI's registry by default and follows the same rules: **Apply** is enabled only after a preview with identical options, applying sync fetches first, and env screens show key names and states only. Errors are sanitized like the CLI.
+An Electron window over the same core: a first-run guide (reopen it from **Guide**), workspace overview with every local branch and a commit graph, **Branch moves** per workspace (the recovery journal, with **Restore…**: a dry-run check, a confirmation, then the same restore as `clonelane restore`), register (folder picker), rename / regroup / remove (registry only; folders are never touched), **Reload local** (re-read Git state on disk, no network), **Fetch remote** (download the base branch), **Auto-fetch** (on by default: fetch remote every 15 minutes while the app is open, without locking the window; actions started meanwhile wait for it), sync preview → apply, and .env sharing: pick a source and the rest of its group is ticked as targets (untick any to share with only some), each with its own **Keep local** keys, then preview and apply them together. **Save profile** stores the form; **Open** on a saved profile fills it in and previews it. It uses the CLI's registry by default and follows the same rules: **Apply** is enabled only after a preview with identical options, applying sync fetches first, and env screens show key names and states only. Errors are sanitized like the CLI.
 
 The interface is English only. Sync reasons from the core are shown through `app/labels.js`; `tests/labels.spec.ts` fails when the core adds a reason without a label.
 

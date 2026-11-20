@@ -25,9 +25,10 @@ const help = `Clonelane — keep your Git workspaces in the same lane.
   clonelane history [--group <group>] [--json]
   clonelane restore <id> [--group <group>] [--dry-run]
   clonelane env plan|apply --source <name> --target <name> --all-keys | --keys API_URL,TOKEN
-                        [--file .env] [--overwrite] [--public-keys VITE_API_URL]
+                        [--file .env] [--overwrite] [--public-keys VITE_API_URL] [--prune]
   clonelane env profile save <profile> --source <name> --all-keys | --keys API_URL,TOKEN
-                        [--file .env] [--public-keys ...] [--keep <workspace>:PORT,DB_NAME ...]
+                        [--file .env] [--public-keys ...] [--keep <workspace>:PORT,DB_NAME ...] [--prune]
+                        [--targets b,c]
   clonelane env profile list | remove <profile>
   clonelane env sync <profile> [--dry-run] [--overwrite]
 
@@ -40,7 +41,8 @@ history lists the branch moves Clonelane made, with their backups. restore moves
 branch back to a backup only if it has not moved since; --dry-run shows the plan.
 env output shows key names and states only. Applying normalizes comments/formatting.
 A profile saves key names, never values. env sync copies from its source to every other
-workspace in that group; each target's --keep keys stay local there.
+workspace in that group (or only --targets); each target's --keep keys stay local there. --prune (with
+--all-keys) also removes target keys the source lacks; removals need --overwrite.
 `;
 
 async function main(): Promise<void> {
@@ -64,6 +66,8 @@ async function main(): Promise<void> {
 			overwrite: { type: "boolean" },
 			"public-keys": { type: "string" },
 			keep: { type: "string", multiple: true },
+			prune: { type: "boolean" },
+			targets: { type: "string" },
 		},
 	});
 	if (values.help || positionals.length === 0) {
@@ -88,7 +92,16 @@ async function main(): Promise<void> {
 					: ["dry-run", "overwrite"]
 				: argument === "profile"
 					? positionals[2] === "save"
-						? ["source", "keys", "all-keys", "file", "public-keys", "keep"]
+						? [
+								"source",
+								"keys",
+								"all-keys",
+								"file",
+								"public-keys",
+								"keep",
+								"prune",
+								"targets",
+							]
 						: []
 					: [
 							"source",
@@ -97,6 +110,7 @@ async function main(): Promise<void> {
 							"all-keys",
 							"file",
 							"public-keys",
+							"prune",
 							...(argument === "apply" ? ["overwrite"] : []),
 						],
 	};
@@ -167,6 +181,8 @@ async function main(): Promise<void> {
 				keys: values.keys?.split(",") ?? "all",
 				publicKeys: values["public-keys"]?.split(","),
 				keep,
+				prune: values.prune,
+				targets: values.targets?.split(","),
 			}),
 		);
 		return;
@@ -209,6 +225,7 @@ async function main(): Promise<void> {
 			keys: values.keys?.split(",") ?? ("all" as const),
 			overwrite: values.overwrite,
 			publicKeys: values["public-keys"]?.split(","),
+			prune: values.prune,
 		};
 		print(
 			await (argument === "apply" ? applyEnv : planEnv)(

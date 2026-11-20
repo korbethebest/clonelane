@@ -20,6 +20,10 @@ export interface EnvProfile {
 	publicKeys?: string[];
 	/** Per target workspace name: keys that stay local there (never added or overwritten). */
 	keep?: Record<string, string[]>;
+	/** Also remove target keys the source lacks (needs keys "all"). */
+	prune?: boolean;
+	/** Only these workspaces of the source's group. Absent: the whole group, as it is then. */
+	targets?: string[];
 }
 
 export interface Registry {
@@ -39,6 +43,8 @@ function validProfile(item: EnvProfile): boolean {
 		) &&
 		(item.keys === "all" || strings(item.keys)) &&
 		(item.publicKeys === undefined || strings(item.publicKeys)) &&
+		(item.prune === undefined || typeof item.prune === "boolean") &&
+		(item.targets === undefined || strings(item.targets)) &&
 		(item.keep === undefined ||
 			(item.keep != null &&
 				typeof item.keep === "object" &&
@@ -174,14 +180,19 @@ export async function updateWorkspace(
 		for (const profile of profiles) {
 			// Profiles refer to workspaces by name: follow a rename.
 			if (profile.source === name) profile.source = next.name;
-			if (!profile.keep || !Object.hasOwn(profile.keep, name)) continue;
-			const keys = profile.keep[name] ?? [];
-			delete profile.keep[name];
-			// Kept keys only apply within the source's group; leaving it drops them.
+			// Targets and kept keys only apply within the source's group; leaving it drops them.
 			const source = registry.workspaces.find(
 				(item) => item.name === profile.source,
 			);
-			if (source?.group === next.group) profile.keep[next.name] = keys;
+			const stays = source?.group === next.group;
+			if (profile.targets?.includes(name))
+				profile.targets = profile.targets.flatMap((item) =>
+					item !== name ? [item] : stays ? [next.name] : [],
+				);
+			if (!profile.keep || !Object.hasOwn(profile.keep, name)) continue;
+			const keys = profile.keep[name] ?? [];
+			delete profile.keep[name];
+			if (stays) profile.keep[next.name] = keys;
 		}
 		Object.assign(workspace, next);
 		updated = workspace;
@@ -202,8 +213,12 @@ export async function removeWorkspace(
 				"PROFILE_SOURCE",
 				`Workspace "${name}" is the source of env profile "${using.name}". Remove or change that profile first.`,
 			);
-		for (const profile of registry.profiles ?? [])
+		// A profile left with no targets fails when run; it never widens to the whole group.
+		for (const profile of registry.profiles ?? []) {
 			if (profile.keep) delete profile.keep[name];
+			if (profile.targets)
+				profile.targets = profile.targets.filter((item) => item !== name);
+		}
 		registry.workspaces = registry.workspaces.filter(
 			(item) => item !== workspace,
 		);
@@ -233,26 +248,32 @@ export async function saveProfile(
 		file: profile.file,
 		keys: profile.keys,
 		publicKeys: profile.publicKeys,
+		prune: profile.prune,
 	});
-	const saved: EnvProfile = {
-		name: profile.name,
-		source: profile.source,
-		file: profile.file,
-		keys: profile.keys,
-		...(profile.publicKeys?.length ? { publicKeys: profile.publicKeys } : {}),
-		...(profile.keep && Object.keys(profile.keep).length
-			? { keep: profile.keep }
-			: {}),
-	};
+	const keep = profile.keep ?? {};
+	let saved: EnvProfile | undefined;
 	await edit(path, (registry) => {
 		const source = find(registry, profile.source);
-		for (const [name, keys] of Object.entries(profile.keep ?? {})) {
+		const member = (name: string) => {
 			const target = find(registry, name);
 			if (target === source || target.group !== source.group)
 				fail(
-					"PROFILE_KEEP",
-					`Kept keys belong to another workspace in group "${source.group}", not to "${name}".`,
+					"PROFILE_TARGET",
+					`"${name}" is not another workspace in group "${source.group}".`,
 				);
+		};
+		if (profile.targets) {
+			if (
+				profile.targets.length === 0 ||
+				new Set(profile.targets).size !== profile.targets.length
+			)
+				fail("PROFILE_TARGET", "Choose at least one target, each once.");
+			for (const name of profile.targets) member(name);
+		}
+		for (const [name, keys] of Object.entries(keep)) {
+			member(name);
+			if (profile.targets && !profile.targets.includes(name))
+				fail("PROFILE_KEEP", `"${name}" keeps keys but is not a target.`);
 			if (keys.length === 0)
 				fail("ENV_KEYS", "Select at least one key to keep.");
 			validateKeys({ file: profile.file, keys: "all", keep: keys });
@@ -266,12 +287,23 @@ export async function saveProfile(
 					"Kept keys must be among the profile's selected keys.",
 				);
 		}
+		const next: EnvProfile = {
+			name: profile.name,
+			source: profile.source,
+			file: profile.file,
+			keys: profile.keys,
+			...(profile.publicKeys?.length ? { publicKeys: profile.publicKeys } : {}),
+			...(profile.targets ? { targets: profile.targets } : {}),
+			...(Object.keys(keep).length ? { keep } : {}),
+			...(profile.prune ? { prune: true } : {}),
+		};
+		saved = next;
 		registry.profiles = [
-			...(registry.profiles ?? []).filter((item) => item.name !== saved.name),
-			saved,
+			...(registry.profiles ?? []).filter((item) => item.name !== next.name),
+			next,
 		];
 	});
-	return saved;
+	return saved as EnvProfile;
 }
 
 export async function removeProfile(path: string, name: string): Promise<void> {

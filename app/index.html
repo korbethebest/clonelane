@@ -83,7 +83,7 @@
 					<div class="guide-head">
 						<h2 id="guide-title" tabindex="-1">Get started</h2>
 						<span id="guide-progress" class="guide-progress" aria-live="polite"></span>
-						<button id="guide-hide" type="button" class="link">Hide guide</button>
+						<button id="guide-hide" type="button" class="quiet small">Hide guide</button>
 					</div>
 					<p class="guide-lede">
 						Clonelane keeps every clone of a repository in step. It never pushes, and it backs up
@@ -108,15 +108,18 @@
 							</span>
 						</label>
 						<label>Name <input name="name" required /></label>
-						<label>Group <input name="group" required list="group-options" /></label>
+						<label>
+							<span class="label-row">Group <button type="button" class="help" data-help="help-register-group" aria-label="About groups" aria-expanded="false">?</button></span>
+							<input name="group" required list="group-options" />
+						</label>
 						<label>Base branch <input name="base" placeholder="master" /></label>
 						<label>Remote <input name="remote" placeholder="origin" /></label>
-						<p class="hint wide">
-							A group is one repository: put every clone and worktree of it in the same group. Sync
-							and .env sharing work within a group.
-						</p>
 						<div class="actions"><button type="submit" class="primary">Add</button></div>
-					</form>
+						</form>
+						<div id="help-register-group" class="help-pop" popover>
+							A group is one repository: put every clone and worktree of it in the same group. Sync and
+							.env sharing work within a group.
+						</div>
 					<datalist id="group-options"></datalist>
 					<p id="register-error" class="alert" role="alert" hidden></p>
 				</details>
@@ -143,17 +146,28 @@
 						Apply
 					</button>
 					<span id="sync-reason" class="reason"></span>
+					<button type="button" class="help" data-help="help-sync" aria-label="About applying a sync" aria-expanded="false">?</button>
 				</div>
-				<p class="hint">
+				<div id="help-sync" class="help-pop" popover>
 					Apply fetches first and backs up every branch it moves. It never pushes or stashes.
-				</p>
+				</div>
 			</section>
 
 			<section id="env" role="tabpanel" aria-labelledby="tab-env" hidden>
+				<div id="profiles" hidden>
+					<h2 class="section-title">Saved profiles</h2>
+					<div id="profile-list"></div>
+					<p id="profile-error" class="alert" role="alert" hidden></p>
+				</div>
 				<form id="env-form" class="grid">
 					<label>From <select name="source"></select></label>
-					<label>To (same group) <select name="target"></select></label>
-					<p id="env-peers" class="notice wide" role="status" hidden></p>
+					<fieldset class="targets wide">
+						<legend>
+							<span class="label-row"><span id="targets-legend">To</span> <button type="button" class="help" data-help="help-env" aria-label="About sharing .env keys" aria-expanded="false">?</button></span>
+						</legend>
+						<div id="target-list"></div>
+						<p id="env-peers" class="notice" role="status" hidden></p>
+					</fieldset>
 					<fieldset class="scope wide">
 						<legend>Keys</legend>
 						<label class="inline">
@@ -172,6 +186,10 @@
 							aria-label="Keys to copy"
 							placeholder="API_URL, API_TOKEN"
 						/>
+						<label class="inline prune">
+							<input type="checkbox" name="prune" />
+							Also remove keys the source doesn't have (all keys only)
+						</label>
 					</fieldset>
 					<details class="more wide">
 						<summary>More options</summary>
@@ -187,27 +205,24 @@
 				</form>
 				<p id="env-error" class="alert" role="alert" hidden></p>
 				<div id="env-result"></div>
-				<div class="commit">
-					<label id="overwrite-row" class="inline" hidden>
-						<input id="overwrite" type="checkbox" />
-						Replace conflicting values
+				<div class="save-profile">
+					<label>
+						<span class="label-row">Save as profile <button type="button" class="help" data-help="help-profile" aria-label="About profiles" aria-expanded="false">?</button></span>
+						<input id="profile-name" placeholder="dev" />
 					</label>
-					<button
-						id="env-apply"
-						type="button"
-						class="primary"
-						disabled
-						aria-describedby="env-reason"
-					>
-						Apply
-					</button>
-					<span id="env-reason" class="reason"></span>
-				</div>
-				<p class="hint">
-					Keys are copied only between workspaces in the same group. Only key names are shown, never
-					values. Keys that exist only in the target are kept.
-					Applying rewrites the target file without its comments.
-				</p>
+					<button id="profile-save" type="button">Save profile</button>
+					</div>
+					<div id="help-profile" class="help-pop" popover>
+						Saves this form to run again later: source, targets, kept keys and key options. With every
+						target ticked, the profile follows the group, including workspaces added later. Only key
+						names are saved, never values.
+					</div>
+					<div id="help-env" class="help-pop" popover>
+						Keys are copied only between workspaces in the same group, and only key names are shown,
+						never values. Keys that exist only in a target are kept unless you choose to remove them;
+						keys kept local in a target are never touched. Applying rewrites each target file without
+						its comments.
+					</div>
 			</section>
 		</fieldset>
 

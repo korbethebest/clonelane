@@ -5,7 +5,7 @@ import { parseEnv } from "node:util";
 import { ClonelaneError, fail } from "./errors.ts";
 import { atomicWrite, readOptional, withLock } from "./files.ts";
 import { gitSucceeds } from "./git.ts";
-import type { Registry } from "./registry.ts";
+import type { EnvProfile, Registry } from "./registry.ts";
 import {
 	assertIdentity,
 	inspectWorkspace,
@@ -20,11 +20,16 @@ export interface EnvOptions {
 	publicKeys?: string[];
 	/** Keys that stay local in the target: never added or overwritten, reported as "kept". */
 	keep?: string[];
+	/**
+	 * With keys "all": also remove target keys the source does not define (state "remove"),
+	 * except kept ones. Applying a removal needs overwrite, like a conflict.
+	 */
+	prune?: boolean;
 }
 
 export interface EnvChange {
 	key: string;
-	state: "add" | "same" | "conflict" | "kept";
+	state: "add" | "same" | "conflict" | "kept" | "remove";
 }
 export interface EnvPlan {
 	source: string;
@@ -47,6 +52,9 @@ export function validateKeys(options: EnvOptions): void {
 	if (new Set(keep).size !== keep.length || keep.some((key) => !KEY.test(key)))
 		fail("ENV_KEYS", "Kept keys must be unique variable names.");
 	if (options.keys === "all") return;
+	// Only a whole-file mirror can say which keys the target should no longer have.
+	if (options.prune)
+		fail("ENV_KEYS", "Removing keys the source lacks needs all keys.");
 	if (
 		options.keys.length === 0 ||
 		new Set(options.keys).size !== options.keys.length ||
@@ -149,6 +157,12 @@ async function prepare(
 	const to = await readEnv(target, options.file);
 	if (from.raw == null)
 		fail("ENV_SOURCE_MISSING", "Source environment file does not exist.");
+	// Mirroring an empty source would empty every target: refuse instead.
+	if (options.prune && Object.keys(from.values).length === 0)
+		fail(
+			"ENV_SOURCE_EMPTY",
+			"The source file defines no keys, so removing the keys it lacks would empty the target.",
+		);
 	const keys =
 		options.keys === "all" ? Object.keys(from.values).sort() : options.keys;
 	const changes: EnvChange[] = [];
@@ -166,6 +180,13 @@ async function prepare(
 				: "conflict";
 		changes.push({ key, state });
 	}
+	if (options.prune)
+		for (const key of Object.keys(to.values).sort())
+			if (!Object.hasOwn(from.values, key))
+				changes.push({
+					key,
+					state: options.keep?.includes(key) ? "kept" : "remove",
+				});
 	const plan: EnvPlan = {
 		source: source.name,
 		target: target.name,
@@ -219,11 +240,13 @@ export async function applyEnv(
 		const { from, to, plan } = await prepare(source, target, options);
 		if (
 			!options.overwrite &&
-			plan.changes.some((change) => change.state === "conflict")
+			plan.changes.some((change) =>
+				["conflict", "remove"].includes(change.state),
+			)
 		)
 			fail(
 				"ENV_CONFLICT",
-				"Target values differ. Review the key-only plan and explicitly enable overwrite.",
+				"Target values differ or keys would be removed. Review the key-only plan and explicitly enable overwrite.",
 			);
 		if (plan.changes.every((change) => ["same", "kept"].includes(change.state)))
 			return plan;
@@ -232,7 +255,8 @@ export async function applyEnv(
 			to.values,
 		);
 		for (const { key, state } of plan.changes)
-			if (state !== "kept") merged[key] = from.values[key] ?? "";
+			if (state === "remove") delete merged[key];
+			else if (state !== "kept") merged[key] = from.values[key] ?? "";
 		const content = serialize(merged);
 		// Compare again before replacement; do not silently discard an editor's update.
 		const latestSource = await readEnv(source, options.file);
@@ -256,35 +280,56 @@ export interface ProfileResult {
 }
 
 /**
- * Plans (dryRun) or applies a saved env profile from its source to every other workspace
- * in the source's group, each with its own kept keys. Targets run one at a time and
- * independently: one target's conflict or error is reported and does not stop the others.
+ * Plans (dryRun) or applies an env profile (a saved one by name, or an unsaved one) from its
+ * source to its targets: every other workspace in the source's group, or only those listed,
+ * each with its own kept keys. Targets are handled independently (previews in parallel,
+ * writes one at a time): one target's conflict or error is reported and does not stop the
+ * others.
  */
 export async function syncEnvProfile(
 	registry: Registry,
-	name: string,
+	which: string | EnvProfile,
 	options: { dryRun?: boolean; overwrite?: boolean } = {},
 ): Promise<ProfileResult[]> {
-	const profile = registry.profiles?.find((item) => item.name === name);
-	if (!profile) fail("PROFILE", `Env profile "${name}" does not exist.`);
+	const profile =
+		typeof which === "string"
+			? registry.profiles?.find((item) => item.name === which)
+			: which;
+	if (!profile) fail("PROFILE", `Env profile "${which}" does not exist.`);
 	const source = registry.workspaces.find(
 		(item) => item.name === profile.source,
 	);
 	if (!source)
 		fail("WORKSPACE", `Workspace "${profile.source}" is not registered.`);
-	const targets = registry.workspaces.filter(
+	const members = registry.workspaces.filter(
 		(item) => item.group === source.group && item !== source,
 	);
+	const unknown = profile.targets?.find(
+		(name) => !members.some((item) => item.name === name),
+	);
+	if (unknown)
+		fail(
+			"PROFILE_TARGET",
+			`"${unknown}" is not another workspace in group "${source.group}".`,
+		);
+	const listed = profile.targets;
+	const targets = listed
+		? members.filter((item) => listed.includes(item.name))
+		: members;
 	if (targets.length === 0)
-		fail("EMPTY", `No other workspace is in group "${source.group}".`);
-	const results: ProfileResult[] = [];
-	// One at a time: worktrees of one clone share the lock that applyEnv takes.
-	for (const target of targets) {
+		fail(
+			"EMPTY",
+			listed
+				? "This profile has no targets left."
+				: `No other workspace is in group "${source.group}".`,
+		);
+	const one = async (target: Workspace): Promise<ProfileResult> => {
 		try {
 			const plan = await (options.dryRun ? planEnv : applyEnv)(source, target, {
 				file: profile.file,
 				keys: profile.keys,
 				publicKeys: profile.publicKeys,
+				prune: profile.prune,
 				// Own entries only: a workspace may be named like an Object member.
 				keep:
 					profile.keep && Object.hasOwn(profile.keep, target.name)
@@ -292,9 +337,9 @@ export async function syncEnvProfile(
 						: undefined,
 				overwrite: options.overwrite,
 			});
-			results.push({ target: target.name, plan });
+			return { target: target.name, plan };
 		} catch (error) {
-			results.push({
+			return {
 				target: target.name,
 				...(error instanceof ClonelaneError
 					? { error: error.code, message: error.message }
@@ -303,8 +348,27 @@ export async function syncEnvProfile(
 							message:
 								"Operation failed. Details were suppressed to protect local secrets.",
 						}),
-			});
+			};
 		}
+	};
+	// A preview only reads, so targets are compared in parallel. Writes go one at a time:
+	// worktrees of one clone share the lock that applyEnv takes.
+	if (options.dryRun) {
+		// At most four at once: each target starts several Git processes.
+		const results: ProfileResult[] = new Array(targets.length);
+		let next = 0;
+		const worker = async () => {
+			while (next < targets.length) {
+				const index = next++;
+				results[index] = await one(targets[index] as Workspace);
+			}
+		};
+		await Promise.all(
+			Array.from({ length: Math.min(4, targets.length) }, worker),
+		);
+		return results;
 	}
+	const results: ProfileResult[] = [];
+	for (const target of targets) results.push(await one(target));
 	return results;
 }

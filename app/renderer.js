@@ -47,11 +47,103 @@ function table(headers, rows, className = "") {
 	);
 }
 
+// Help: a "?" button whose text opens in a popover. Hover shows it while the pointer is
+// there; a click (or Enter) keeps it open until Esc or a click elsewhere.
+let helpCount = 0;
+function help(text, label) {
+	const id = `help-dynamic-${++helpCount}`;
+	return [
+		el(
+			"button",
+			{
+				type: "button",
+				className: "help",
+				ariaLabel: label,
+				ariaExpanded: "false",
+				dataset: { help: id },
+			},
+			"?",
+		),
+		el("div", { id, className: "help-pop", popover: "auto" }, text),
+	];
+}
+const helpPop = (button) => document.getElementById(button.dataset.help);
+function showHelp(button, pinned) {
+	const pop = helpPop(button);
+	if (!pop) return;
+	pop.dataset.pinned = pinned ? "true" : "";
+	// The button is the popover's anchor, so it opens right under it.
+	if (!pop.matches(":popover-open")) pop.showPopover({ source: button });
+	button.ariaExpanded = "true";
+}
+// Pressing ? while its pinned popover is open light-dismisses it before the click; note it,
+// so the click does not open it again.
+let dismissedBy = null;
+document.addEventListener(
+	"pointerdown",
+	(event) => {
+		const button = event.target.closest?.("button.help");
+		const pop = button && helpPop(button);
+		dismissedBy =
+			pop?.matches(":popover-open") && pop.dataset.pinned ? button : null;
+	},
+	true,
+);
+document.addEventListener("click", (event) => {
+	// A popover inside a summary or label must not toggle or focus what holds it.
+	if (event.target.closest?.(".help-pop")) {
+		event.preventDefault();
+		return;
+	}
+	const button = event.target.closest?.("button.help");
+	if (!button) return;
+	// Inside a summary, the click must not also open or close the details.
+	event.preventDefault();
+	const pop = helpPop(button);
+	if (dismissedBy === button) {
+		dismissedBy = null;
+		if (pop?.matches(":popover-open")) pop.hidePopover();
+		return;
+	}
+	if (pop?.matches(":popover-open") && pop.dataset.pinned) pop.hidePopover();
+	else showHelp(button, true);
+});
+document.addEventListener("mouseover", (event) => {
+	const button = event.target.closest?.("button.help");
+	if (button && !helpPop(button)?.matches(":popover-open"))
+		showHelp(button, false);
+});
+document.addEventListener("mouseout", (event) => {
+	const button = event.target.closest?.("button.help");
+	if (!button || button.contains(event.relatedTarget)) return;
+	const pop = helpPop(button);
+	if (pop?.matches(":popover-open") && !pop.dataset.pinned) pop.hidePopover();
+});
+document.addEventListener(
+	"toggle",
+	(event) => {
+		const pop = event.target;
+		if (!pop.classList?.contains("help-pop") || event.newState !== "closed")
+			return;
+		pop.dataset.pinned = "";
+		const button = document.querySelector(
+			`button.help[data-help="${CSS.escape(pop.id)}"]`,
+		);
+		if (button) button.ariaExpanded = "false";
+	},
+	true,
+);
+
 let registry = { workspaces: [] };
 let loaded = false; // Avoid an "empty" flash before the registry is read.
-const view = { statuses: null, sync: null, env: null, loading: 0 };
+const view = {
+	statuses: null,
+	sync: null,
+	// Env preview or result: { key, input, results, applied, overwrite }.
+	env: null,
+	loading: 0,
+};
 let syncPreview = null;
-let envPreview = null;
 
 function say(text = "", busy = false) {
 	const status = $("#message");
@@ -114,8 +206,6 @@ async function call(name, input, { busy, alert = "footer-alert" } = {}) {
 
 const group = () => $("#group").value;
 const syncKey = () => JSON.stringify([group(), $("#rebase").checked]);
-const envInput = () => Object.fromEntries(new FormData($("#env-form")));
-const envKey = () => JSON.stringify(envInput());
 const workspaceNamed = (name) =>
 	registry.workspaces.find((item) => item.name === name);
 const baseRef = (workspace) =>
@@ -133,6 +223,22 @@ function outcome(item, applied) {
 	if (item.action === "skip" && item.reason !== "rebase-not-enabled")
 		return "blocked";
 	return "none";
+}
+
+const writing = (change) =>
+	["add", "conflict", "remove"].includes(change.state);
+// Replacing or removing a value needs the explicit tick; adding one never does.
+function riskText(changes) {
+	const differ = changes.filter((c) => c.state === "conflict").length;
+	const removed = changes.filter((c) => c.state === "remove").length;
+	const parts = [
+		differ &&
+			`${plural(differ, "key")} ${differ === 1 ? "has" : "have"} a different value`,
+		removed && `${plural(removed, "key")} would be removed`,
+	].filter(Boolean);
+	return parts.length
+		? `${capitalize(parts.join(" and "))}. Tick “Replace differing values and remove keys” to continue.`
+		: null;
 }
 
 // Apply buttons always say why they are (or are not) available.
@@ -159,22 +265,6 @@ function gate() {
 					? "Nothing can be updated yet. Resolve what needs attention, then preview again."
 					: "Nothing to update. Preview does not fetch: click Fetch remote, then preview again.";
 	}
-
-	const plan = view.env;
-	const changes = plan?.changes ?? [];
-	const conflicts = changes.filter((c) => c.state === "conflict").length;
-	const writes = changes.filter((c) => c.state !== "same").length;
-	$("#overwrite-row").hidden = !plan || conflicts === 0;
-	let reason;
-	if (!plan || envPreview !== envKey())
-		reason = "Preview first to see what will change.";
-	else if (writes === 0)
-		reason = "Nothing to write. The target already matches.";
-	else if (conflicts > 0 && !$("#overwrite").checked)
-		reason = `${plural(conflicts, "key")} already ${conflicts === 1 ? "has" : "have"} a different value. Tick “Replace conflicting values” to continue.`;
-	$("#env-apply").disabled = reason != null;
-	$("#env-reason").textContent =
-		reason ?? `Writes ${plural(writes, "key")} to ${plan.target}.`;
 }
 
 function fillSelect(select, values, labels = values) {
@@ -193,16 +283,29 @@ function renderRegistry() {
 	$("#group-options").replaceChildren(
 		...groups.map((value) => el("option", { value })),
 	);
+	// Sources follow the header's group filter; with several groups, each is its own section.
 	const source = $("#env-form [name=source]");
-	fillSelect(
-		source,
-		registry.workspaces.map((item) => item.name),
+	const previous = source.value;
+	const shown = registry.workspaces.filter(
+		(item) => !group() || item.group === group(),
 	);
+	const shownGroups = [...new Set(shown.map((item) => item.group))];
+	const option = (item) => el("option", { value: item.name }, item.name);
+	source.replaceChildren(
+		...(shownGroups.length > 1
+			? shownGroups.map((name) =>
+					el(
+						"optgroup",
+						{ label: name },
+						shown.filter((item) => item.group === name).map(option),
+					),
+				)
+			: shown.map(option)),
+	);
+	if (shown.some((item) => item.name === previous)) source.value = previous;
 	// Start from a workspace that has someone to share with.
 	if (peers(source.value).length === 0) {
-		const shared = registry.workspaces.find(
-			(item) => peers(item.name).length > 0,
-		);
+		const shared = shown.find((item) => peers(item.name).length > 0);
 		if (shared) source.value = shared.name;
 	}
 	fillTargets();
@@ -218,10 +321,54 @@ const peers = (name) => {
 
 function fillTargets() {
 	const form = $("#env-form");
-	const source = workspaceNamed(form.elements.source.value);
-	const names = peers(form.elements.source.value);
-	fillSelect(form.elements.target, names);
-	form.elements.target.disabled = names.length === 0;
+	const sourceName = form.elements.source.value;
+	const source = workspaceNamed(sourceName);
+	const names = peers(sourceName);
+	const list = $("#target-list");
+	// Rebuilt with the registry: keep what was ticked and typed for the same source.
+	const before = new Map(
+		list.dataset.source === sourceName
+			? [...list.children].map((row) => [
+					row.dataset.name,
+					{
+						checked: row.querySelector("[name=target]").checked,
+						keep: row.querySelector("[type=text]").value,
+					},
+				])
+			: [],
+	);
+	list.dataset.source = sourceName;
+	list.replaceChildren(
+		...names.map((name) => {
+			const was = before.get(name);
+			const box = el("input", {
+				type: "checkbox",
+				name: "target",
+				value: name,
+				checked: was?.checked ?? true,
+			});
+			const keep = el("input", {
+				type: "text",
+				name: `keep:${name}`,
+				value: was?.keep ?? "",
+				placeholder: "PORT, DB_NAME",
+				ariaLabel: `Keys kept local in ${name}`,
+				disabled: !box.checked,
+			});
+			box.addEventListener("change", () => {
+				keep.disabled = !box.checked;
+			});
+			return el(
+				"div",
+				{ className: "target-row", dataset: { name } },
+				el("label", { className: "inline" }, box, name),
+				el("label", { className: "inline keep" }, "Keep local", keep),
+			);
+		}),
+	);
+	$("#targets-legend").textContent = source
+		? `To (others in ${source.group})`
+		: "To";
 	$("#env-plan").disabled = names.length === 0;
 	const note = $("#env-peers");
 	note.textContent =
@@ -285,7 +432,11 @@ function render() {
 	$("#sync-result").replaceChildren(
 		...(view.sync ? renderSync(view.sync) : []),
 	);
-	$("#env-result").replaceChildren(...(view.env ? renderEnv(view.env) : []));
+	if (view.env && view.env.key !== envKey()) view.env = null;
+	$("#env-result").replaceChildren(
+		...(view.env ? renderEnvResult(view.env) : []),
+	);
+	renderProfiles();
 	renderGuide();
 	gate();
 }
@@ -478,11 +629,14 @@ function renderWorkspace(state) {
 					dataset: { key: `${workspace.name}:moves` },
 					ontoggle: (event) => loadMoves(event.currentTarget, state),
 				},
-				el("summary", {}, "Branch moves"),
 				el(
-					"p",
-					{ className: "hint" },
-					"Every branch Clonelane moved, with a backup of where it was. Restore puts a branch back, only if nothing changed since.",
+					"summary",
+					{},
+					"Branch moves",
+					...help(
+						"Every branch Clonelane moved, with a backup of where it was. Restore puts a branch back, only if nothing changed since.",
+						"About branch moves",
+					),
 				),
 				el("p", { className: "moves-slot empty" }, "Loading…"),
 			),
@@ -756,7 +910,6 @@ function dropPreviews() {
 	view.sync = null;
 	view.env = null;
 	syncPreview = null;
-	envPreview = null;
 }
 
 function editForm(workspace) {
@@ -775,11 +928,19 @@ function editForm(workspace) {
 			"Name",
 			el("input", { name: "newName", value: workspace.name, required: true }),
 		),
-		el("label", {}, "Group", group),
 		el(
-			"p",
-			{ className: "hint wide" },
-			"Workspaces in the same group sync together and can share .env keys. Use one group for every clone and worktree of a repository.",
+			"label",
+			{},
+			el(
+				"span",
+				{ className: "label-row" },
+				"Group",
+				...help(
+					"Workspaces in the same group sync together and can share .env keys. Use one group for every clone and worktree of a repository.",
+					"About groups",
+				),
+			),
+			group,
 		),
 		el(
 			"div",
@@ -935,9 +1096,21 @@ const stateText = {
 	add: "will be added",
 	same: "already the same",
 	conflict: "different value",
+	kept: "kept local in the target",
+	remove: "will be removed",
+};
+// After a write, the same states read as what happened.
+const writtenText = {
+	...stateText,
+	add: "added",
+	conflict: "replaced",
+	remove: "removed",
 };
 
-function renderEnv(plan) {
+// Keys that need no change fold into one line, so the table shows only what happens.
+function renderEnv(plan, written = false) {
+	const changed = plan.changes.filter((change) => change.state !== "same");
+	const same = plan.changes.filter((change) => change.state === "same");
 	return [
 		el(
 			"p",
@@ -945,23 +1118,349 @@ function renderEnv(plan) {
 			`${plan.source} → ${plan.target} `,
 			el("code", {}, plan.file),
 		),
-		table(
-			["Key", "Change"],
-			plan.changes.map((change) => [
-				[
-					el("code", {}, change.key),
-					/^(VITE_|NEXT_PUBLIC_|PUBLIC_)/.test(change.key) &&
-						el("span", { className: "none" }, " browser-exposed"),
-				],
+		changed.length > 0 &&
+			table(
+				["Key", "Change"],
+				changed.map((change) => [
+					[
+						el("code", {}, change.key),
+						/^(VITE_|NEXT_PUBLIC_|PUBLIC_)/.test(change.key) &&
+							el("span", { className: "none" }, " browser-exposed"),
+					],
+					el(
+						"span",
+						{ className: `state ${change.state}` },
+						(written ? writtenText : stateText)[change.state] ?? change.state,
+					),
+				]),
+			),
+		same.length > 0 &&
+			el(
+				"details",
+				{ className: "same-keys" },
 				el(
-					"span",
-					{ className: `state ${change.state}` },
-					stateText[change.state] ?? change.state,
+					"summary",
+					{},
+					changed.length
+						? `${plural(same.length, "other key")} already the same`
+						: `All ${plural(same.length, "key")} already the same`,
 				),
-			]),
-		),
-	];
+				el(
+					"p",
+					{ className: "key-list" },
+					same.flatMap((change, index) => [
+						index > 0 && ", ",
+						el("code", {}, change.key),
+					]),
+				),
+			),
+	].filter(Boolean);
 }
+
+// Env sharing: one source, then every other workspace of its group as a checkbox (all
+// ticked by default), each with its own kept keys. A profile is this form, saved.
+const profiles = () => registry.profiles ?? [];
+
+// What the form asks for, as flat fields: kept keys travel as "keep:<workspace>". Fields
+// are read directly: FormData skips them while the UI is locked (disabled) for a call.
+function envInput() {
+	const form = $("#env-form");
+	const fields = form.elements;
+	const source = fields.source.value;
+	const selected = fields.scope.value === "selected";
+	const targets = [...form.querySelectorAll("[name=target]")]
+		.filter((box) => box.checked)
+		.map((box) => box.value);
+	const input = {
+		source,
+		targets: targets.join(","),
+		allTargets: targets.length > 0 && targets.length === peers(source).length,
+		scope: selected ? "selected" : "all",
+		keys: selected ? fields.keys.value : "",
+		publicKeys: selected ? fields.publicKeys.value : "",
+		file: fields.file.value,
+		prune: !selected && fields.prune.checked,
+	};
+	for (const name of targets) {
+		const keep = (fields[`keep:${name}`]?.value ?? "").trim();
+		if (keep) input[`keep:${name}`] = keep;
+	}
+	return input;
+}
+// A preview stands for the form and the group as registered when it was made.
+const envKey = () =>
+	JSON.stringify([
+		envInput(),
+		registry.workspaces.map((item) => [item.name, item.group]),
+	]);
+
+function applyScope() {
+	const form = $("#env-form");
+	const selected = form.elements.scope.value === "selected";
+	form.elements.keys.disabled = !selected;
+	form.elements.keys.hidden = !selected;
+	form.elements.publicKeys.disabled = !selected;
+	// Removing keys the source lacks only makes sense when mirroring the whole file.
+	form.elements.prune.disabled = selected;
+	if (selected) form.elements.prune.checked = false;
+}
+
+function describeProfile(profile) {
+	const group = workspaceNamed(profile.source)?.group;
+	const to = profile.targets
+		? profile.targets.join(", ")
+		: group
+			? `every other workspace in ${group}`
+			: "its group (source not registered)";
+	const kept = Object.entries(profile.keep ?? {}).map(
+		([name, keys]) => `${name} keeps ${keys.join(", ")}`,
+	);
+	return [
+		`From ${profile.source} to ${to}`,
+		profile.file,
+		profile.keys === "all" ? "all keys" : profile.keys.join(", "),
+		profile.prune && "removes keys the source lacks",
+		...kept,
+	]
+		.filter(Boolean)
+		.join(" · ");
+}
+
+function renderProfiles() {
+	const list = profiles();
+	$("#profiles").hidden = list.length === 0;
+	$("#profile-list").replaceChildren(
+		...list.map((profile) =>
+			el(
+				"div",
+				{ className: "profile" },
+				el(
+					"div",
+					{ className: "profile-text" },
+					el("strong", {}, profile.name),
+					el("p", { className: "profile-meta" }, describeProfile(profile)),
+				),
+				el(
+					"button",
+					{
+						type: "button",
+						className: "small",
+						ariaLabel: `Open profile ${profile.name}`,
+						onclick: () => openProfile(profile),
+					},
+					"Open",
+				),
+				el(
+					"button",
+					{
+						type: "button",
+						className: "small",
+						ariaLabel: `Delete profile ${profile.name}`,
+						onclick: () => deleteProfile(profile),
+					},
+					"Delete",
+				),
+			),
+		),
+	);
+}
+
+function renderEnvResult(shown) {
+	const { results, applied } = shown;
+	const plans = results.filter((item) => item.plan);
+	const changes = plans.flatMap((item) => item.plan.changes);
+	const risk = riskText(changes);
+	const writes = changes.filter(writing).length;
+	const failed = results.length - plans.length;
+	// Cards re-render often (auto-fetch, reloads): the tick lives in the view, not the DOM.
+	const overwrite = el("input", {
+		type: "checkbox",
+		checked: shown.overwrite === true,
+	});
+	const apply = el(
+		"button",
+		{ type: "button", className: "primary" },
+		results.length > 1 ? `Apply to ${results.length} workspaces` : "Apply",
+	);
+	const reason = el("span", { className: "reason" });
+	const gateApply = () => {
+		const text =
+			writes === 0
+				? results.length > 1
+					? "Nothing to write. Every target already matches."
+					: "Nothing to write. The target already matches."
+				: risk && !overwrite.checked
+					? risk
+					: null;
+		apply.disabled = text != null;
+		reason.textContent =
+			text ??
+			`Writes ${plural(writes, "key")}${results.length > 1 ? `, one workspace at a time` : ""}.${failed ? ` ${plural(failed, "workspace")} failed in the preview and will be tried again.` : ""}`;
+	};
+	overwrite.addEventListener("change", () => {
+		shown.overwrite = overwrite.checked;
+		gateApply();
+	});
+	apply.addEventListener("click", () => applyEnvForm(shown));
+	gateApply();
+	return [
+		applied &&
+			el(
+				"p",
+				{ className: "plan-title" },
+				"Written. Preview again to compare.",
+			),
+		...results.flatMap((item) =>
+			item.plan
+				? renderEnv(item.plan, applied)
+				: [el("p", { className: "error" }, `${item.target}: ${item.message}`)],
+		),
+		!applied &&
+			el(
+				"div",
+				{ className: "commit" },
+				risk &&
+					el(
+						"label",
+						{ className: "inline" },
+						overwrite,
+						"Replace differing values and remove keys",
+					),
+				apply,
+				reason,
+			),
+	].filter(Boolean);
+}
+
+async function previewEnv() {
+	const key = envKey();
+	const input = envInput();
+	const results = await call(
+		"envSync",
+		{ ...input, dryRun: true },
+		{ busy: "Comparing keys…", alert: "env-error" },
+	);
+	view.env = results ? { key, input, results, applied: false } : null;
+	render();
+}
+
+async function applyEnvForm(shown) {
+	const count = shown.results.length;
+	const changes = shown.results.flatMap((item) => item.plan?.changes ?? []);
+	const removed = changes.filter((change) => change.state === "remove").length;
+	const replaced = changes.filter(
+		(change) => change.state === "conflict",
+	).length;
+	// Name what will be lost, not just that something will.
+	const losses = [
+		replaced && `replace ${plural(replaced, "value")}`,
+		removed && `remove ${plural(removed, "key")}`,
+	].filter(Boolean);
+	if (
+		!confirm(
+			`Write keys to ${plural(count, "workspace")}${shown.overwrite && losses.length ? ` and ${losses.join(" and ")}` : ""}?`,
+		)
+	)
+		return;
+	const results = await call(
+		"envSync",
+		{ ...shown.input, overwrite: shown.overwrite === true },
+		{ busy: "Writing keys…", alert: "env-error" },
+	);
+	if (!results) return;
+	view.env = { ...shown, results, applied: true };
+	render();
+	const failed = results.filter((item) => item.error).length;
+	say(
+		failed
+			? `Wrote ${results.length - failed} of ${plural(results.length, "workspace")}; see the errors above.`
+			: `Wrote ${plural(results.length, "workspace")}.`,
+	);
+}
+
+// Fill the form from a saved profile, then preview it.
+async function openProfile(profile) {
+	const form = $("#env-form");
+	if (!workspaceNamed(profile.source)) {
+		showError("profile-error", {
+			message: `Workspace "${profile.source}" is not registered. Delete this profile or register it again.`,
+		});
+		return;
+	}
+	showError("profile-error", null);
+	// The header's group filter may hide this profile's source: show every group again.
+	const hidden = ![...form.elements.source.options].some(
+		(option) => option.value === profile.source,
+	);
+	if (hidden) {
+		$("#group").value = "";
+		renderRegistry();
+	}
+	form.elements.source.value = profile.source;
+	fillTargets();
+	const keep = profile.keep ?? {};
+	for (const row of $("#target-list").children) {
+		const name = row.dataset.name;
+		const box = row.querySelector("[name=target]");
+		const field = row.querySelector("[type=text]");
+		box.checked = !profile.targets || profile.targets.includes(name);
+		field.disabled = !box.checked;
+		field.value = Object.hasOwn(keep, name) ? keep[name].join(", ") : "";
+	}
+	form.elements.scope.value = profile.keys === "all" ? "all" : "selected";
+	applyScope();
+	form.elements.keys.value =
+		profile.keys === "all" ? "" : profile.keys.join(", ");
+	form.elements.publicKeys.value = (profile.publicKeys ?? []).join(", ");
+	form.elements.prune.checked = profile.prune === true;
+	form.elements.file.value = profile.file === ".env" ? "" : profile.file;
+	$("#profile-name").value = profile.name;
+	await previewEnv();
+	// Workspaces and Sync follow the filter too; re-read them once the preview is up.
+	if (hidden) await refresh();
+}
+
+async function deleteProfile(profile) {
+	if (!confirm(`Delete profile ${profile.name}? No .env file is changed.`))
+		return;
+	if (
+		!(await call(
+			"profileRemove",
+			{ name: profile.name },
+			{ alert: "profile-error" },
+		))
+	)
+		return;
+	await reloadRegistry();
+	say(`Deleted profile ${profile.name}.`);
+}
+
+// Profiles live in the registry; re-read it without re-reading every workspace.
+async function reloadRegistry() {
+	const data = await call("registry", {});
+	if (!data) return;
+	registry = data;
+	renderRegistry();
+	render();
+}
+
+$("#profile-name").addEventListener("keydown", (event) => {
+	if (event.key !== "Enter") return;
+	event.preventDefault();
+	$("#profile-save").click();
+});
+
+$("#profile-save").addEventListener("click", async () => {
+	const name = $("#profile-name").value.trim();
+	const saved = await call(
+		"profileSave",
+		{ ...envInput(), name },
+		{ busy: "Saving profile…", alert: "env-error" },
+	);
+	if (!saved) return;
+	await reloadRegistry();
+	say(`Saved profile ${saved.name}.`);
+});
 
 // Tabs follow the WAI-ARIA pattern: one tab stop, arrow keys move between tabs.
 const tabs = [...document.querySelectorAll("[role=tab]")];
@@ -1005,22 +1504,18 @@ $("#group").addEventListener("change", () => {
 	refresh();
 });
 $("#rebase").addEventListener("change", invalidateSync);
-$("#overwrite").addEventListener("change", gate);
 // The key list only applies to "Only these keys"; disabled fields stay out of the form data.
 $("#env-form").addEventListener("change", (event) => {
 	if (event.target.name === "source") fillTargets();
 	if (event.target.name !== "scope") return;
-	const form = event.currentTarget;
-	const selected = form.elements.scope.value === "selected";
-	form.elements.keys.disabled = !selected;
-	form.elements.keys.hidden = !selected;
-	form.elements.publicKeys.disabled = !selected;
-	if (selected) form.elements.keys.focus();
+	applyScope();
+	if (event.currentTarget.elements.scope.value === "selected")
+		event.currentTarget.elements.keys.focus();
 });
+// Any change to the form makes an earlier preview stand for something else.
 $("#env-form").addEventListener("input", () => {
-	if (view.env && envPreview !== envKey()) {
+	if (view.env && view.env.key !== envKey()) {
 		view.env = null;
-		envPreview = null;
 		render();
 	}
 });
@@ -1116,43 +1611,9 @@ $("#sync-apply").addEventListener("click", async () => {
 	render();
 });
 
-$("#env-form").addEventListener("submit", async (event) => {
+$("#env-form").addEventListener("submit", (event) => {
 	event.preventDefault();
-	const key = envKey();
-	const plan = await call("envPlan", envInput(), {
-		busy: "Comparing keys…",
-		alert: "env-error",
-	});
-	view.env = plan;
-	envPreview = plan ? key : null;
-	$("#overwrite").checked = false;
-	render();
-});
-
-$("#env-apply").addEventListener("click", async () => {
-	const overwrite = $("#overwrite").checked;
-	if (
-		!confirm(
-			overwrite
-				? "Write these keys and replace the conflicting values?"
-				: "Write these keys to the target file?",
-		)
-	)
-		return;
-	const done = await call(
-		"envApply",
-		{ ...envInput(), overwrite },
-		{ busy: "Writing keys…", alert: "env-error" },
-	);
-	if (!done) return;
-	// Compare again so the table shows the file as it is now.
-	const key = envKey();
-	const plan = await call("envPlan", envInput(), { alert: "env-error" });
-	view.env = plan;
-	envPreview = plan ? key : null;
-	$("#overwrite").checked = false;
-	render();
-	say("Keys written.");
+	previewEnv();
 });
 
 // First-run guide: three real steps that check themselves off from real state. The hidden

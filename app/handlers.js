@@ -10,17 +10,18 @@ import { dirname, join } from "node:path";
 
 import {
 	addWorkspace,
-	applyEnv,
 	ClonelaneError,
 	fetchWorkspaces,
 	historyGraph,
 	inspectWorkspace,
 	listOperations,
-	planEnv,
 	readRegistry,
+	removeProfile,
 	removeWorkspace,
 	restoreOperation,
+	saveProfile,
 	selectWorkspaces,
+	syncEnvProfile,
 	syncWorkspaces,
 	updateWorkspace,
 } from "../dist/index.js";
@@ -72,23 +73,35 @@ export function createHandlers(config, { statusCache } = {}) {
 	};
 	const pick = async (group) =>
 		selectWorkspaces(await readRegistry(config), group || undefined);
-	const env = async (input, apply) => {
-		const { workspaces } = await readRegistry(config);
-		const source = workspaces.find((item) => item.name === input.source);
-		const target = workspaces.find((item) => item.name === input.target);
-		if (!source || !target)
-			throw new ClonelaneError(
-				"WORKSPACE",
-				"Source or target is not registered.",
-			);
-		return (apply ? applyEnv : planEnv)(source, target, {
+	// The form's key selection, as the core takes it.
+	const selection = (input) =>
+		input.scope === "selected"
+			? { keys: list(input.keys), publicKeys: list(input.publicKeys) }
+			: // A checkbox posts "on"; removing keys only applies to a whole-file mirror.
+				{ keys: "all", prune: input.prune === "on" || input.prune === true };
+	// The form's fields as a profile. Targets are a comma list; kept keys arrive as
+	// "keep:<workspace>" fields and count only for a chosen target. "All targets" saves no
+	// list, so the profile follows the group as it changes.
+	const profileFrom = (input) => {
+		const targets = list(input.targets);
+		const keep = Object.fromEntries(
+			Object.entries(input)
+				.filter(
+					([field, value]) =>
+						field.startsWith("keep:") &&
+						targets.includes(field.slice(5)) &&
+						list(value).length > 0,
+				)
+				.map(([field, value]) => [field.slice(5), list(value)]),
+		);
+		return {
+			name: String(input.name ?? ""),
+			source: String(input.source ?? ""),
 			file: input.file || ".env",
-			// The whole file unless the user chose "Only these keys".
-			...(input.scope === "selected"
-				? { keys: list(input.keys), publicKeys: list(input.publicKeys) }
-				: { keys: "all" }),
-			overwrite: apply && input.overwrite === true,
-		});
+			...selection(input),
+			...(input.allTargets === true ? {} : { targets }),
+			keep,
+		};
 	};
 	return {
 		registry: () => readRegistry(config),
@@ -181,8 +194,20 @@ export function createHandlers(config, { statusCache } = {}) {
 				rebase: rebase === true,
 				fetch: dryRun !== true,
 			}),
-		envPlan: (input) => env(input, false),
-		envApply: (input) => env(input, true),
+		// Saves the form as the whole profile: its targets and their kept keys replace the
+		// saved ones (an unticked target's kept keys are dropped).
+		profileSave: (input) => saveProfile(config, profileFrom(input)),
+		profileRemove: async ({ name }) => {
+			await removeProfile(config, String(name ?? ""));
+			return String(name);
+		},
+		// The form, run as an unsaved profile. Same contract as clonelane env sync: a
+		// preview (dryRun) never writes, and only a real run can overwrite.
+		envSync: async (input) =>
+			syncEnvProfile(await readRegistry(config), profileFrom(input), {
+				dryRun: input.dryRun === true,
+				overwrite: input.dryRun !== true && input.overwrite === true,
+			}),
 	};
 }
 
