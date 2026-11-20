@@ -1,14 +1,50 @@
 import { mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
+import { validateFile, validateKeys } from "./env.ts";
 import { fail } from "./errors.ts";
 import { atomicWrite, readOptional, withLock } from "./files.ts";
 import { validName } from "./git.ts";
 import { registerWorkspace, type Workspace } from "./workspaces.ts";
 
+/**
+ * A saved .env share: which file and keys to copy from one workspace to the rest of its
+ * group, and which keys each target keeps local. Key names only; never values.
+ */
+export interface EnvProfile {
+	name: string;
+	/** The workspace copied from. The targets are the other workspaces in its group. */
+	source: string;
+	file: string;
+	keys: string[] | "all";
+	publicKeys?: string[];
+	/** Per target workspace name: keys that stay local there (never added or overwritten). */
+	keep?: Record<string, string[]>;
+}
+
 export interface Registry {
 	version: 1;
 	workspaces: Workspace[];
+	profiles?: EnvProfile[];
+}
+
+const strings = (value: unknown) =>
+	Array.isArray(value) && value.every((item) => typeof item === "string");
+
+function validProfile(item: EnvProfile): boolean {
+	return (
+		item != null &&
+		["name", "source", "file"].every(
+			(key) => typeof item[key as keyof EnvProfile] === "string",
+		) &&
+		(item.keys === "all" || strings(item.keys)) &&
+		(item.publicKeys === undefined || strings(item.publicKeys)) &&
+		(item.keep === undefined ||
+			(item.keep != null &&
+				typeof item.keep === "object" &&
+				!Array.isArray(item.keep) &&
+				Object.values(item.keep).every(strings)))
+	);
 }
 
 export async function readRegistry(path: string): Promise<Registry> {
@@ -32,6 +68,16 @@ export async function readRegistry(path: string): Promise<Registry> {
 			fail("CONFIG", "Invalid workspace entry.");
 		}
 	}
+	if (
+		data.profiles !== undefined &&
+		!(
+			Array.isArray(data.profiles) &&
+			data.profiles.every(validProfile) &&
+			new Set(data.profiles.map((item) => item.name)).size ===
+				data.profiles.length
+		)
+	)
+		fail("CONFIG", "Invalid env profile entry.");
 	return data;
 }
 
@@ -116,6 +162,27 @@ export async function updateWorkspace(
 			registry.workspaces.filter((item) => item !== workspace),
 			next,
 		);
+		const profiles = registry.profiles ?? [];
+		// A profile's targets are its source's group: moving the source would silently
+		// point it at other workspaces.
+		const using = profiles.find((item) => item.source === name);
+		if (using && next.group !== workspace.group)
+			fail(
+				"PROFILE_SOURCE",
+				`Workspace "${name}" is the source of env profile "${using.name}". Remove or change that profile before moving it to another group.`,
+			);
+		for (const profile of profiles) {
+			// Profiles refer to workspaces by name: follow a rename.
+			if (profile.source === name) profile.source = next.name;
+			if (!profile.keep || !Object.hasOwn(profile.keep, name)) continue;
+			const keys = profile.keep[name] ?? [];
+			delete profile.keep[name];
+			// Kept keys only apply within the source's group; leaving it drops them.
+			const source = registry.workspaces.find(
+				(item) => item.name === profile.source,
+			);
+			if (source?.group === next.group) profile.keep[next.name] = keys;
+		}
 		Object.assign(workspace, next);
 		updated = workspace;
 	});
@@ -129,6 +196,14 @@ export async function removeWorkspace(
 ): Promise<void> {
 	await edit(path, (registry) => {
 		const workspace = find(registry, name);
+		const using = registry.profiles?.find((item) => item.source === name);
+		if (using)
+			fail(
+				"PROFILE_SOURCE",
+				`Workspace "${name}" is the source of env profile "${using.name}". Remove or change that profile first.`,
+			);
+		for (const profile of registry.profiles ?? [])
+			if (profile.keep) delete profile.keep[name];
 		registry.workspaces = registry.workspaces.filter(
 			(item) => item !== workspace,
 		);
@@ -145,4 +220,64 @@ export function selectWorkspaces(
 	if (selected.length === 0)
 		fail("EMPTY", "No registered workspaces match this selection.");
 	return selected;
+}
+
+/** Create or replace an env profile. Stores key names only; never reads a .env file. */
+export async function saveProfile(
+	path: string,
+	profile: EnvProfile,
+): Promise<EnvProfile> {
+	validName(profile.name, "profile name");
+	validateFile(profile.file);
+	validateKeys({
+		file: profile.file,
+		keys: profile.keys,
+		publicKeys: profile.publicKeys,
+	});
+	const saved: EnvProfile = {
+		name: profile.name,
+		source: profile.source,
+		file: profile.file,
+		keys: profile.keys,
+		...(profile.publicKeys?.length ? { publicKeys: profile.publicKeys } : {}),
+		...(profile.keep && Object.keys(profile.keep).length
+			? { keep: profile.keep }
+			: {}),
+	};
+	await edit(path, (registry) => {
+		const source = find(registry, profile.source);
+		for (const [name, keys] of Object.entries(profile.keep ?? {})) {
+			const target = find(registry, name);
+			if (target === source || target.group !== source.group)
+				fail(
+					"PROFILE_KEEP",
+					`Kept keys belong to another workspace in group "${source.group}", not to "${name}".`,
+				);
+			if (keys.length === 0)
+				fail("ENV_KEYS", "Select at least one key to keep.");
+			validateKeys({ file: profile.file, keys: "all", keep: keys });
+			// With an explicit list, a key outside it is never copied: keeping it means nothing.
+			if (
+				profile.keys !== "all" &&
+				keys.some((key) => !profile.keys.includes(key))
+			)
+				fail(
+					"ENV_KEYS",
+					"Kept keys must be among the profile's selected keys.",
+				);
+		}
+		registry.profiles = [
+			...(registry.profiles ?? []).filter((item) => item.name !== saved.name),
+			saved,
+		];
+	});
+	return saved;
+}
+
+export async function removeProfile(path: string, name: string): Promise<void> {
+	await edit(path, (registry) => {
+		if (!registry.profiles?.some((item) => item.name === name))
+			fail("PROFILE", `Env profile "${name}" does not exist.`);
+		registry.profiles = registry.profiles.filter((item) => item.name !== name);
+	});
 }

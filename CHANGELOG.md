@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- Env profiles: `clonelane env profile save|list|remove` saves a named share (source workspace, file, keys, public-key acknowledgement) in the registry, key names only. `clonelane env sync <profile> [--dry-run] [--overwrite]` plans or writes every other workspace in the source's group, one at a time; a failing target is reported without stopping the others.
+- Layered overrides: `--keep <workspace>:KEY,…` keeps keys local in that target. Kept keys are never added or overwritten and show as `kept` in plans. The library adds `EnvOptions.keep`, `saveProfile()`, `removeProfile()` and `syncEnvProfile()`.
+
+### Changed
+
+- Renaming a workspace updates the env profiles that name it; removing a workspace that is a profile's source, or moving it to another group, is refused (`PROFILE_SOURCE`). A workspace that leaves a profile's group loses its kept keys there.
+
 ## [0.3.0] - 2026-11-20
 
 ### Added

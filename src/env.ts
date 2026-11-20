@@ -2,9 +2,10 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { parseEnv } from "node:util";
 
-import { fail } from "./errors.ts";
+import { ClonelaneError, fail } from "./errors.ts";
 import { atomicWrite, readOptional, withLock } from "./files.ts";
 import { gitSucceeds } from "./git.ts";
+import type { Registry } from "./registry.ts";
 import {
 	assertIdentity,
 	inspectWorkspace,
@@ -17,11 +18,13 @@ export interface EnvOptions {
 	keys: string[] | "all";
 	overwrite?: boolean;
 	publicKeys?: string[];
+	/** Keys that stay local in the target: never added or overwritten, reported as "kept". */
+	keep?: string[];
 }
 
 export interface EnvChange {
 	key: string;
-	state: "add" | "same" | "conflict";
+	state: "add" | "same" | "conflict" | "kept";
 }
 export interface EnvPlan {
 	source: string;
@@ -30,18 +33,24 @@ export interface EnvPlan {
 	changes: EnvChange[];
 }
 
-function validateFile(file: string): void {
+const KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+export function validateFile(file: string): void {
 	if (!/^\.env(?:\.[a-zA-Z0-9_-]+)*$/.test(file))
 		fail("ENV_FILE", "Choose an .env filename without directory components.");
 }
 
 // Explicit selections only: copying the whole file mirrors what the source already
 // exposes, so browser-exposed keys need no separate acknowledgement there.
-function validateKeys(options: EnvOptions & { keys: string[] }): void {
+export function validateKeys(options: EnvOptions): void {
+	const keep = options.keep ?? [];
+	if (new Set(keep).size !== keep.length || keep.some((key) => !KEY.test(key)))
+		fail("ENV_KEYS", "Kept keys must be unique variable names.");
+	if (options.keys === "all") return;
 	if (
 		options.keys.length === 0 ||
 		new Set(options.keys).size !== options.keys.length ||
-		options.keys.some((key) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key))
+		options.keys.some((key) => !KEY.test(key))
 	) {
 		fail(
 			"ENV_KEYS",
@@ -50,9 +59,11 @@ function validateKeys(options: EnvOptions & { keys: string[] }): void {
 	}
 	if ((options.publicKeys ?? []).some((key) => !options.keys.includes(key)))
 		fail("ENV_KEYS", "Public keys must belong to the selected keys.");
+	// A kept key is never copied, so it needs no acknowledgement.
 	if (
 		options.keys.some(
 			(key) =>
+				!keep.includes(key) &&
 				/^(VITE_|NEXT_PUBLIC_|PUBLIC_)/.test(key) &&
 				!options.publicKeys?.includes(key),
 		)
@@ -126,7 +137,7 @@ async function prepare(
 	options: EnvOptions,
 ) {
 	validateFile(options.file);
-	if (options.keys !== "all") validateKeys({ ...options, keys: options.keys });
+	validateKeys(options);
 	if (source.path === target.path)
 		fail("ENV_SAME_TARGET", "Source and target must differ.");
 	if (source.repository !== target.repository || source.group !== target.group)
@@ -142,6 +153,10 @@ async function prepare(
 		options.keys === "all" ? Object.keys(from.values).sort() : options.keys;
 	const changes: EnvChange[] = [];
 	for (const key of keys) {
+		if (options.keep?.includes(key)) {
+			changes.push({ key, state: "kept" });
+			continue;
+		}
 		if (!Object.hasOwn(from.values, key))
 			fail("ENV_KEY_MISSING", "A selected variable is absent from the source.");
 		const state = !Object.hasOwn(to.values, key)
@@ -210,12 +225,14 @@ export async function applyEnv(
 				"ENV_CONFLICT",
 				"Target values differ. Review the key-only plan and explicitly enable overwrite.",
 			);
-		if (plan.changes.every((change) => change.state === "same")) return plan;
+		if (plan.changes.every((change) => ["same", "kept"].includes(change.state)))
+			return plan;
 		const merged = Object.assign(
 			Object.create(null) as Record<string, string>,
 			to.values,
 		);
-		for (const { key } of plan.changes) merged[key] = from.values[key] ?? "";
+		for (const { key, state } of plan.changes)
+			if (state !== "kept") merged[key] = from.values[key] ?? "";
 		const content = serialize(merged);
 		// Compare again before replacement; do not silently discard an editor's update.
 		const latestSource = await readEnv(source, options.file);
@@ -228,4 +245,66 @@ export async function applyEnv(
 		await atomicWrite(join(target.path, options.file), content);
 		return plan;
 	});
+}
+
+export interface ProfileResult {
+	target: string;
+	/** Present when this target was planned or written. */
+	plan?: EnvPlan;
+	error?: string;
+	message?: string;
+}
+
+/**
+ * Plans (dryRun) or applies a saved env profile from its source to every other workspace
+ * in the source's group, each with its own kept keys. Targets run one at a time and
+ * independently: one target's conflict or error is reported and does not stop the others.
+ */
+export async function syncEnvProfile(
+	registry: Registry,
+	name: string,
+	options: { dryRun?: boolean; overwrite?: boolean } = {},
+): Promise<ProfileResult[]> {
+	const profile = registry.profiles?.find((item) => item.name === name);
+	if (!profile) fail("PROFILE", `Env profile "${name}" does not exist.`);
+	const source = registry.workspaces.find(
+		(item) => item.name === profile.source,
+	);
+	if (!source)
+		fail("WORKSPACE", `Workspace "${profile.source}" is not registered.`);
+	const targets = registry.workspaces.filter(
+		(item) => item.group === source.group && item !== source,
+	);
+	if (targets.length === 0)
+		fail("EMPTY", `No other workspace is in group "${source.group}".`);
+	const results: ProfileResult[] = [];
+	// One at a time: worktrees of one clone share the lock that applyEnv takes.
+	for (const target of targets) {
+		try {
+			const plan = await (options.dryRun ? planEnv : applyEnv)(source, target, {
+				file: profile.file,
+				keys: profile.keys,
+				publicKeys: profile.publicKeys,
+				// Own entries only: a workspace may be named like an Object member.
+				keep:
+					profile.keep && Object.hasOwn(profile.keep, target.name)
+						? profile.keep[target.name]
+						: undefined,
+				overwrite: options.overwrite,
+			});
+			results.push({ target: target.name, plan });
+		} catch (error) {
+			results.push({
+				target: target.name,
+				...(error instanceof ClonelaneError
+					? { error: error.code, message: error.message }
+					: {
+							error: "FAILED",
+							message:
+								"Operation failed. Details were suppressed to protect local secrets.",
+						}),
+			});
+		}
+	}
+	return results;
 }

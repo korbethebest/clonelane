@@ -34,8 +34,11 @@ import {
 	planEnv,
 	readRegistry,
 	registerWorkspace,
+	removeProfile,
 	removeWorkspace,
 	restoreOperation,
+	saveProfile,
+	syncEnvProfile,
 	syncWorkspaces,
 	updateWorkspace,
 } from "../src/index.ts";
@@ -653,6 +656,173 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 			parseEnv(await readFile(join(f.second, ".env"), "utf8")).TOKEN,
 			"new",
 		);
+	});
+
+	test("env profile syncs a group, keeps each target's local keys and reports targets independently", async (t) => {
+		const f = await fixture(t);
+		const third = join(f.root, "third");
+		await run(f.root, ["clone", f.remote, third]);
+		const config = join(f.root, "registry.json");
+		for (const [name, path] of [
+			["first", f.first],
+			["second", f.second],
+			["third", third],
+		] as const)
+			await addWorkspace(config, { name, path, group: "demo" });
+		await writeFile(
+			join(f.first, ".env"),
+			"TOKEN=shared\nPORT=3000\nVITE_URL=https://example.invalid\n",
+		);
+		await writeFile(join(f.second, ".env"), "PORT=3001\nLOCAL=1\n");
+		await writeFile(join(third, ".env"), "TOKEN=other\n");
+		const profile = await saveProfile(config, {
+			name: "dev",
+			source: "first",
+			file: ".env",
+			keys: "all",
+			keep: { second: ["PORT"] },
+		});
+		assert.equal(JSON.stringify(profile).includes("shared"), false);
+
+		const preview = await syncEnvProfile(await readRegistry(config), "dev", {
+			dryRun: true,
+		});
+		assert.deepEqual(
+			preview.map((item) => [
+				item.target,
+				item.plan?.changes.map((change) => `${change.key}:${change.state}`),
+			]),
+			[
+				["second", ["PORT:kept", "TOKEN:add", "VITE_URL:add"]],
+				["third", ["PORT:add", "TOKEN:conflict", "VITE_URL:add"]],
+			],
+		);
+		assert.equal(
+			await readFile(join(f.second, ".env"), "utf8"),
+			"PORT=3001\nLOCAL=1\n",
+		);
+
+		// third conflicts: it is reported, second is still written.
+		const applied = await syncEnvProfile(await readRegistry(config), "dev");
+		assert.deepEqual(
+			applied.map((item) => [item.target, item.error ?? "ok"]),
+			[
+				["second", "ok"],
+				["third", "ENV_CONFLICT"],
+			],
+		);
+		assert.deepEqual(
+			{ ...parseEnv(await readFile(join(f.second, ".env"), "utf8")) },
+			{
+				LOCAL: "1",
+				PORT: "3001",
+				TOKEN: "shared",
+				VITE_URL: "https://example.invalid",
+			},
+		);
+		assert.equal(await readFile(join(third, ".env"), "utf8"), "TOKEN=other\n");
+		await syncEnvProfile(await readRegistry(config), "dev", {
+			overwrite: true,
+		});
+		assert.equal(
+			parseEnv(await readFile(join(third, ".env"), "utf8")).TOKEN,
+			"shared",
+		);
+	});
+
+	test("env profiles validate on save, follow renames and protect their source", async (t) => {
+		const f = await fixture(t);
+		const config = join(f.root, "registry.json");
+		await addWorkspace(config, { name: "first", path: f.first, group: "demo" });
+		await addWorkspace(config, {
+			name: "second",
+			path: f.second,
+			group: "demo",
+		});
+		const base = { name: "dev", source: "first", file: ".env" };
+		await assert.rejects(saveProfile(config, { ...base, keys: ["VITE_URL"] }), {
+			code: "PUBLIC_VARIABLE",
+		});
+		await assert.rejects(
+			saveProfile(config, { ...base, keys: "all", keep: { first: ["PORT"] } }),
+			{ code: "PROFILE_KEEP" },
+		);
+		await assert.rejects(
+			saveProfile(config, { ...base, keys: "all", keep: { second: ["1BAD"] } }),
+			{ code: "ENV_KEYS" },
+		);
+		await assert.rejects(
+			saveProfile(config, { ...base, file: "../.env", keys: "all" }),
+			{
+				code: "ENV_FILE",
+			},
+		);
+		await saveProfile(config, {
+			...base,
+			keys: ["TOKEN", "PORT"],
+			publicKeys: [],
+			keep: { second: ["PORT"] },
+		});
+		await updateWorkspace(config, "second", { name: "two" });
+		await updateWorkspace(config, "first", { name: "one" });
+		assert.deepEqual((await readRegistry(config)).profiles, [
+			{
+				name: "dev",
+				source: "one",
+				file: ".env",
+				keys: ["TOKEN", "PORT"],
+				keep: { two: ["PORT"] },
+			},
+		]);
+		await assert.rejects(removeWorkspace(config, "one"), {
+			code: "PROFILE_SOURCE",
+		});
+		await assert.rejects(
+			updateWorkspace(config, "one", { group: "elsewhere" }),
+			{
+				code: "PROFILE_SOURCE",
+			},
+		);
+		await assert.rejects(
+			saveProfile(config, {
+				...base,
+				source: "one",
+				keys: ["TOKEN"],
+				keep: { two: ["PORT"] },
+			}),
+			{ code: "ENV_KEYS" },
+		);
+		// Leaving the source's group drops the kept keys; coming back does not restore them.
+		await updateWorkspace(config, "two", { group: "elsewhere" });
+		assert.equal(
+			(await readRegistry(config)).profiles?.[0]?.keep?.two,
+			undefined,
+		);
+		await updateWorkspace(config, "two", { group: "demo" });
+		await saveProfile(config, {
+			...base,
+			source: "one",
+			keys: ["TOKEN", "PORT"],
+			keep: { two: ["PORT"] },
+		});
+		await removeWorkspace(config, "two");
+		assert.equal(
+			(await readRegistry(config)).profiles?.[0]?.keep?.two,
+			undefined,
+		);
+		await removeProfile(config, "dev");
+		await removeWorkspace(config, "one");
+		await writeFile(
+			config,
+			JSON.stringify({ version: 1, workspaces: [], profiles: [{ name: 1 }] }),
+		);
+		await assert.rejects(readRegistry(config), { code: "CONFIG" });
+		const twice = { name: "dev", source: "x", file: ".env", keys: "all" };
+		await writeFile(
+			config,
+			JSON.stringify({ version: 1, workspaces: [], profiles: [twice, twice] }),
+		);
+		await assert.rejects(readRegistry(config), { code: "CONFIG" });
 	});
 
 	test("env rejects tracked files, missing keys, path traversal and public variables without acknowledgement", async (t) => {
