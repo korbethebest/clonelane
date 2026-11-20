@@ -11,7 +11,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Changed
 
-- The desktop app's buttons share a minimum width (88px, 64px for small ones), so side-by-side actions such as Preview and Apply match; every disabled button looks the same whatever its variant; tabs are 36px like other controls, and every field uses 14px text.
+- The desktop app's buttons share a minimum width (88px, 64px for small ones), so side-by-side actions such as Preview and Apply match; every disabled button looks the same whatever its variant; tabs are 36px like other controls, and every field uses 14px text. The window keeps the scrollbar's space on every tab, so switching tabs no longer shifts the header.
 
 ## [0.4.0] - 2026-11-20
 
