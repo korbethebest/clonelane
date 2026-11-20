@@ -33,6 +33,9 @@
 	/* Control heights: fields and buttons share one; row actions use the small one. */
 	--control: 36px;
 	--control-sm: 28px;
+	/* Short labels share one width, so buttons side by side match. */
+	--control-width: 88px;
+	--control-width-sm: 64px;
 	font:
 		14px / 1.5 system-ui,
 		"Segoe UI",
@@ -83,6 +86,7 @@ body {
 	overflow-x: clip;
 }
 
+
 body {
 	margin: 0;
 	background: var(--bg);
@@ -90,7 +94,9 @@ body {
 	caret-color: var(--accent);
 	display: flex;
 	flex-direction: column;
-	min-height: 100vh;
+	/* The window never scrolls: the header and status bar stay put, full width. */
+	height: 100vh;
+	overflow: hidden;
 }
 
 code {
@@ -124,12 +130,17 @@ header {
 	font-size: 16px;
 }
 
+/* Only the content scrolls, and its scrollbar's space is kept whether a tab scrolls or
+   not, so switching tabs never shifts anything. */
 fieldset#ui {
 	border: 0;
 	margin: 0;
 	padding: 0 var(--space-5) var(--space-6);
 	flex: 1;
 	min-width: 0;
+	min-height: 0;
+	overflow-y: auto;
+	scrollbar-gutter: stable;
 }
 
 button,
@@ -149,6 +160,7 @@ button {
 	justify-content: center;
 	gap: var(--space-2);
 	min-height: var(--control);
+	min-width: var(--control-width);
 	padding: 0 var(--space-4);
 	line-height: 20px;
 	border: 1px solid var(--line);
@@ -192,13 +204,13 @@ button:disabled {
 	cursor: not-allowed;
 }
 
-/* A disabled primary reads as unavailable, not as a faded brand colour. */
-button.primary:disabled {
+/* Every bordered button looks the same when unavailable, whatever its variant: a faded
+   brand colour or a faded panel would read as different controls. */
+button:not(.quiet, .help, [role="tab"]):disabled {
 	opacity: 1;
 	background: var(--bg);
 	border-color: var(--line);
 	color: var(--muted);
-	cursor: not-allowed;
 }
 
 button:focus-visible,
@@ -217,11 +229,12 @@ summary:focus-visible {
 }
 
 .tabs button {
+	min-width: 0;
 	border: 0;
 	border-bottom: 2px solid transparent;
 	border-radius: 0;
 	background: none;
-	padding: var(--space-2) var(--space-4);
+	padding: 0 var(--space-4);
 	color: var(--muted);
 }
 
@@ -246,6 +259,7 @@ input:not([type="checkbox"], [type="radio"]),
 select {
 	min-height: var(--control);
 	padding: 0 var(--space-3);
+	font-size: 14px;
 	line-height: 20px;
 }
 
@@ -379,6 +393,7 @@ details#register-panel {
 
 button.small {
 	min-height: var(--control-sm);
+	min-width: var(--control-width-sm);
 	padding: 0 var(--space-3);
 	font-size: 13px;
 }
@@ -1211,6 +1226,7 @@ fieldset.scope label.prune {
 
 button.help {
 	min-height: 0;
+	min-width: 0;
 	width: 18px;
 	height: 18px;
 	padding: 0;
@@ -1244,4 +1260,19 @@ button.help[aria-expanded="true"] {
 	line-height: 1.5;
 	text-wrap: pretty;
 	box-shadow: 0 6px 20px color-mix(in srgb, var(--text) 14%, transparent);
+}
+
+/* A lease is information, not a problem: its own calm colour, never the warning one. */
+.status-line .lease,
+.target-row .lease-note {
+	color: var(--remote);
+}
+
+.target-row .lease-note {
+	font-size: 13px;
+}
+
+.lease-skip {
+	margin-top: var(--space-4);
+	color: var(--remote);
 }
