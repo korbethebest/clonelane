@@ -432,10 +432,16 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		// Renewing keeps since and moves until.
 		const renewed = await takeLease(f.b, { holder: "agent-1", minutes: 600 });
 		assert.equal(renewed.since, lease.since);
+		assert.equal(renewed.note, "feat/login");
 		assert.ok(Date.parse(renewed.until) > Date.parse(lease.until));
 
 		await f.publish();
+		const tracked = () =>
+			run(f.second, ["rev-parse", "refs/remotes/origin/master"]);
+		const before = await tracked();
 		const synced = await syncWorkspaces([f.a, f.b], { fetch: true });
+		// Not even fetched: its remote-tracking refs stay where the holder left them.
+		assert.equal(await tracked(), before);
 		assert.deepEqual(
 			synced.map((item) => [item.name, item.result, item.reason]),
 			[
@@ -443,7 +449,7 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 				["second", "skipped", "leased"],
 			],
 		);
-		const mine = await syncWorkspaces([f.b], { as: "agent-1" });
+		const mine = await syncWorkspaces([f.b], { as: "agent-1", fetch: true });
 		assert.equal(mine[0]?.result, "updated");
 
 		await writeFile(join(f.first, ".env"), "TOKEN=x\n");
@@ -489,7 +495,11 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		);
 		assert.equal(await readLease(gitDir), null);
 		await writeFile(file, "not json");
-		assert.equal((await readLease(gitDir))?.holder, "unknown");
+		assert.equal((await readLease(gitDir))?.holder, "?");
+		// No holder name matches it, so --as cannot get past it either.
+		await assert.rejects(planEnv(f.a, f.b, { ...options, as: "?" }), {
+			code: "LEASED",
+		});
 		await assert.rejects(releaseLease(f.b), { code: "LEASED" });
 		await releaseLease(f.b, { force: true });
 		assert.equal(await readLease(gitDir), null);

@@ -225,6 +225,8 @@ async function main(): Promise<void> {
 			);
 		if (argument === "take") {
 			if (!values.holder) fail("USAGE", "lease take requires --holder.");
+			if (values.minutes !== undefined && !/^\d+$/.test(values.minutes))
+				fail("USAGE", "--minutes takes a whole number of minutes.");
 			const minutes =
 				values.minutes === undefined ? DEFAULT_MINUTES : Number(values.minutes);
 			print({

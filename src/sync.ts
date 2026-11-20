@@ -6,7 +6,7 @@ import { ClonelaneError } from "./errors.ts";
 import { withLock } from "./files.ts";
 import { git, gitSucceeds } from "./git.ts";
 import { begin, finish } from "./journal.ts";
-import { blocks } from "./lease.ts";
+import { blocks, workspaceLease } from "./lease.ts";
 import {
 	assertIdentity,
 	inspectWorkspace,
@@ -270,7 +270,25 @@ export async function syncWorkspaces(
 	// A preview only reads, so workspaces are inspected side by side.
 	if (options.dryRun)
 		return Promise.all(workspaces.map((item) => syncOne(item, options)));
-	const fetched = options.fetch ? await fetchWorkspaces(workspaces) : [];
+	// A workspace leased by someone else is not fetched either: that would move its
+	// remote-tracking refs under the holder. An unreadable lease is left to syncOne to report.
+	const free = options.fetch
+		? await Promise.all(
+				workspaces.map((item) =>
+					workspaceLease(item).then(
+						(lease) => !blocks(lease, options.as),
+						() => true,
+					),
+				),
+			)
+		: [];
+	const fetchedFree = options.fetch
+		? await fetchWorkspaces(workspaces.filter((_, index) => free[index]))
+		: [];
+	let next = 0;
+	const fetched = workspaces.map((_, index) =>
+		free[index] ? fetchedFree[next++] : undefined,
+	);
 	const results: SyncResult[] = [];
 	for (const [index, workspace] of workspaces.entries()) {
 		// fetchWorkspaces answers in input order, so results pair by position, not name.

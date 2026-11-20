@@ -39,8 +39,8 @@ function validLease(data: Partial<Lease> | null): data is Lease {
 
 /**
  * The lease in a checkout's own .git directory, or null when there is none or it lapsed.
- * An unreadable lease file counts as held (by "unknown"), so nothing tramples on it;
- * releasing with force clears it.
+ * An unreadable lease file counts as held by "?", a name no holder can have, so nothing
+ * (not even --as) gets past it; releasing with force clears it.
  */
 export async function readLease(
 	gitDir: string,
@@ -56,7 +56,7 @@ export async function readLease(
 	}
 	if (!validLease(data))
 		return {
-			holder: "unknown",
+			holder: "?",
 			note: "unreadable lease file",
 			since: "",
 			until: new Date(8.64e15).toISOString(),
@@ -66,7 +66,7 @@ export async function readLease(
 
 /** True when a lease stops `as` (a holder name, or nobody) from changing the workspace. */
 export const blocks = (lease: Lease | null | undefined, as?: string) =>
-	lease != null && lease.holder !== as;
+	lease != null && (lease.holder !== as || !HOLDER.test(lease.holder));
 
 export function leasedMessage(name: string, lease: Lease): string {
 	return `${name} is in use by ${lease.holder}${lease.note ? ` (${lease.note})` : ""} until ${lease.until}. Wait, or act as that holder.`;
@@ -97,9 +97,11 @@ export async function takeLease(
 		const current = await readLease(gitDir, now);
 		if (current && current.holder !== input.holder)
 			fail("LEASED", leasedMessage(workspace.name, current));
+		// Renewing without a note keeps the reason already given.
+		const kept = note ?? current?.note;
 		const lease: Lease = {
 			holder: input.holder,
-			...(note ? { note } : {}),
+			...(kept ? { note: kept } : {}),
 			since: current?.since || new Date(now).toISOString(),
 			until: new Date(now + minutes * 60_000).toISOString(),
 		};
