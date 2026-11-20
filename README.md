@@ -4,7 +4,7 @@
 
 Clonelane (클론레인) manages multiple clones and linked worktrees of one repository. See every local branch, advance your base branches without discarding local work, and share selected local environment variables.
 
-Version 0.2.0, an early release: the CLI and library API may still change before 1.0. See [CHANGELOG.md](CHANGELOG.md).
+Version 0.3.0, an early release: the CLI and library API may still change before 1.0. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Install
 
