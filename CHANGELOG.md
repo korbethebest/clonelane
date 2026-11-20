@@ -11,7 +11,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Changed
 
-- Renaming a workspace updates the env profiles that name it; removing a workspace that is a profile's source is refused (`PROFILE_SOURCE`).
+- Renaming a workspace updates the env profiles that name it; removing a workspace that is a profile's source, or moving it to another group, is refused (`PROFILE_SOURCE`). A workspace that leaves a profile's group loses its kept keys there.
 
 ## [0.3.0] - 2026-11-20
 

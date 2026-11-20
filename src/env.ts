@@ -285,7 +285,11 @@ export async function syncEnvProfile(
 				file: profile.file,
 				keys: profile.keys,
 				publicKeys: profile.publicKeys,
-				keep: profile.keep?.[target.name],
+				// Own entries only: a workspace may be named like an Object member.
+				keep:
+					profile.keep && Object.hasOwn(profile.keep, target.name)
+						? profile.keep[target.name]
+						: undefined,
 				overwrite: options.overwrite,
 			});
 			results.push({ target: target.name, plan });

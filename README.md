@@ -130,7 +130,9 @@ clonelane env profile remove dev
 - Targets are every other workspace in the source's group, at the time you run `env sync`.
 - Layers, highest first: a target's kept keys (`--keep <workspace>:KEY,…`, repeat per workspace) → the source's values → keys only the target has. Kept keys are never added or overwritten and show as `kept`.
 - Each target is planned and written on its own, with all the rules above. A conflict or error in one target is reported in its result and does not stop the others; the exit code is 1 if any target failed.
-- `--keys`, `--public-keys` and `--file` work as for `env plan`, and are checked when the profile is saved. Renaming a workspace updates its profiles; removing a profile's source is refused until the profile is removed.
+- `--keys`, `--public-keys` and `--file` work as for `env plan`, and are checked when the profile is saved. Browser-exposed keys need `--public-keys` even if some targets keep them, because the other targets (and workspaces that join the group later) receive them. With `--keys`, kept keys must be among them.
+- `env sync --dry-run` takes no `--overwrite` and, like `env plan`, exits 0 when it finds conflicts.
+- Renaming a workspace updates its profiles. Removing a profile's source, or moving it to another group, is refused until the profile is removed. A target that leaves the source's group loses its kept keys.
 
 There is **no central plaintext secret database**: this version reads an explicitly chosen existing source `.env` and writes the target. It does not provide an encrypted vault, keychain integration or network secret sharing yet. The source and destination remain plaintext and readable to processes with filesystem access. POSIX files use mode `0600`; on Windows, inherited directory ACLs apply and must be appropriate. See [SECURITY.md](SECURITY.md).
 

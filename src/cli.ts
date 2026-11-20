@@ -82,7 +82,10 @@ async function main(): Promise<void> {
 		restore: ["group", "dry-run"],
 		env:
 			argument === "sync"
-				? ["dry-run", "overwrite"]
+				? // Like env plan: a preview takes no --overwrite.
+					values["dry-run"]
+					? ["dry-run"]
+					: ["dry-run", "overwrite"]
 				: argument === "profile"
 					? positionals[2] === "save"
 						? ["source", "keys", "all-keys", "file", "public-keys", "keep"]

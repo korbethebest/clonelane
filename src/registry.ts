@@ -70,7 +70,12 @@ export async function readRegistry(path: string): Promise<Registry> {
 	}
 	if (
 		data.profiles !== undefined &&
-		!(Array.isArray(data.profiles) && data.profiles.every(validProfile))
+		!(
+			Array.isArray(data.profiles) &&
+			data.profiles.every(validProfile) &&
+			new Set(data.profiles.map((item) => item.name)).size ===
+				data.profiles.length
+		)
 	)
 		fail("CONFIG", "Invalid env profile entry.");
 	return data;
@@ -157,15 +162,27 @@ export async function updateWorkspace(
 			registry.workspaces.filter((item) => item !== workspace),
 			next,
 		);
-		// Profiles refer to workspaces by name: follow a rename.
-		if (next.name !== name)
-			for (const profile of registry.profiles ?? []) {
-				if (profile.source === name) profile.source = next.name;
-				if (profile.keep && Object.hasOwn(profile.keep, name)) {
-					profile.keep[next.name] = profile.keep[name] ?? [];
-					delete profile.keep[name];
-				}
-			}
+		const profiles = registry.profiles ?? [];
+		// A profile's targets are its source's group: moving the source would silently
+		// point it at other workspaces.
+		const using = profiles.find((item) => item.source === name);
+		if (using && next.group !== workspace.group)
+			fail(
+				"PROFILE_SOURCE",
+				`Workspace "${name}" is the source of env profile "${using.name}". Remove or change that profile before moving it to another group.`,
+			);
+		for (const profile of profiles) {
+			// Profiles refer to workspaces by name: follow a rename.
+			if (profile.source === name) profile.source = next.name;
+			if (!profile.keep || !Object.hasOwn(profile.keep, name)) continue;
+			const keys = profile.keep[name] ?? [];
+			delete profile.keep[name];
+			// Kept keys only apply within the source's group; leaving it drops them.
+			const source = registry.workspaces.find(
+				(item) => item.name === profile.source,
+			);
+			if (source?.group === next.group) profile.keep[next.name] = keys;
+		}
 		Object.assign(workspace, next);
 		updated = workspace;
 	});
@@ -239,6 +256,15 @@ export async function saveProfile(
 			if (keys.length === 0)
 				fail("ENV_KEYS", "Select at least one key to keep.");
 			validateKeys({ file: profile.file, keys: "all", keep: keys });
+			// With an explicit list, a key outside it is never copied: keeping it means nothing.
+			if (
+				profile.keys !== "all" &&
+				keys.some((key) => !profile.keys.includes(key))
+			)
+				fail(
+					"ENV_KEYS",
+					"Kept keys must be among the profile's selected keys.",
+				);
 		}
 		registry.profiles = [
 			...(registry.profiles ?? []).filter((item) => item.name !== saved.name),

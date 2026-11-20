@@ -777,6 +777,34 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		await assert.rejects(removeWorkspace(config, "one"), {
 			code: "PROFILE_SOURCE",
 		});
+		await assert.rejects(
+			updateWorkspace(config, "one", { group: "elsewhere" }),
+			{
+				code: "PROFILE_SOURCE",
+			},
+		);
+		await assert.rejects(
+			saveProfile(config, {
+				...base,
+				source: "one",
+				keys: ["TOKEN"],
+				keep: { two: ["PORT"] },
+			}),
+			{ code: "ENV_KEYS" },
+		);
+		// Leaving the source's group drops the kept keys; coming back does not restore them.
+		await updateWorkspace(config, "two", { group: "elsewhere" });
+		assert.equal(
+			(await readRegistry(config)).profiles?.[0]?.keep?.two,
+			undefined,
+		);
+		await updateWorkspace(config, "two", { group: "demo" });
+		await saveProfile(config, {
+			...base,
+			source: "one",
+			keys: ["TOKEN", "PORT"],
+			keep: { two: ["PORT"] },
+		});
 		await removeWorkspace(config, "two");
 		assert.equal(
 			(await readRegistry(config)).profiles?.[0]?.keep?.two,
@@ -787,6 +815,12 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		await writeFile(
 			config,
 			JSON.stringify({ version: 1, workspaces: [], profiles: [{ name: 1 }] }),
+		);
+		await assert.rejects(readRegistry(config), { code: "CONFIG" });
+		const twice = { name: "dev", source: "x", file: ".env", keys: "all" };
+		await writeFile(
+			config,
+			JSON.stringify({ version: 1, workspaces: [], profiles: [twice, twice] }),
 		);
 		await assert.rejects(readRegistry(config), { code: "CONFIG" });
 	});
