@@ -96,7 +96,7 @@ clonelane env apply --source a --target b --keys API_URL,API_TOKEN --overwrite
 Both workspaces must be registered in the same group. The selected filename defaults to `.env`; `--file .env.development` is supported. Directory components and arbitrary filenames are rejected.
 
 - Choose `--all-keys` or `--keys` explicitly; a missing selection is an error, never an implicit "all".
-- Keys that exist only in the target (or are not selected) remain local, such as `PORT` or a test account. Nothing is deleted.
+- Keys that exist only in the target (or are not selected) remain local, such as `PORT` or a test account. Nothing is deleted unless you ask for `--prune` (below).
 - Preview shows names and `add` / `same` / `conflict`, never values or value hashes.
 - Different existing values block application unless `--overwrite` is explicit.
 - Missing source keys fail the whole operation for that target; no implicit deletion.
@@ -129,6 +129,7 @@ clonelane env profile remove dev
 
 - Targets are every other workspace in the source's group, at the time you run `env sync`.
 - Layers, highest first: a target's kept keys (`--keep <workspace>:KEY,…`, repeat per workspace) → the source's values → keys only the target has. Kept keys are never added or overwritten and show as `kept`.
+- `--prune` (with `--all-keys`, on `env plan|apply` or saved in a profile) also removes target keys the source does not define, so the targets mirror the source. They show as `remove`, and like conflicts they are only applied with `--overwrite`. Kept keys are never removed.
 - Each target is planned and written on its own, with all the rules above. A conflict or error in one target is reported in its result and does not stop the others; the exit code is 1 if any target failed.
 - `--keys`, `--public-keys` and `--file` work as for `env plan`, and are checked when the profile is saved. Browser-exposed keys need `--public-keys` even if some targets keep them, because the other targets (and workspaces that join the group later) receive them. With `--keys`, kept keys must be among them.
 - `env sync --dry-run` takes no `--overwrite` and, like `env plan`, exits 0 when it finds conflicts.

@@ -148,6 +148,22 @@ function outcome(item, applied) {
 	return "none";
 }
 
+const writing = (change) =>
+	["add", "conflict", "remove"].includes(change.state);
+// Replacing or removing a value needs the explicit tick; adding one never does.
+function riskText(changes) {
+	const differ = changes.filter((c) => c.state === "conflict").length;
+	const removed = changes.filter((c) => c.state === "remove").length;
+	const parts = [
+		differ &&
+			`${plural(differ, "key")} ${differ === 1 ? "has" : "have"} a different value`,
+		removed && `${plural(removed, "key")} would be removed`,
+	].filter(Boolean);
+	return parts.length
+		? `${capitalize(parts.join(" and "))}. Tick “Replace differing values and remove keys” to continue.`
+		: null;
+}
+
 // Apply buttons always say why they are (or are not) available.
 function gate() {
 	const sync = view.sync;
@@ -175,16 +191,15 @@ function gate() {
 
 	const plan = view.env;
 	const changes = plan?.changes ?? [];
-	const conflicts = changes.filter((c) => c.state === "conflict").length;
-	const writes = changes.filter((c) => c.state !== "same").length;
-	$("#overwrite-row").hidden = !plan || conflicts === 0;
+	const risk = riskText(changes);
+	const writes = changes.filter(writing).length;
+	$("#overwrite-row").hidden = !plan || risk == null;
 	let reason;
 	if (!plan || envPreview !== envKey())
 		reason = "Preview first to see what will change.";
 	else if (writes === 0)
 		reason = "Nothing to write. The target already matches.";
-	else if (conflicts > 0 && !$("#overwrite").checked)
-		reason = `${plural(conflicts, "key")} already ${conflicts === 1 ? "has" : "have"} a different value. Tick “Replace conflicting values” to continue.`;
+	else if (risk && !$("#overwrite").checked) reason = risk;
 	$("#env-apply").disabled = reason != null;
 	$("#env-reason").textContent =
 		reason ?? `Writes ${plural(writes, "key")} to ${plan.target}.`;
@@ -950,9 +965,15 @@ const stateText = {
 	same: "already the same",
 	conflict: "different value",
 	kept: "kept local in the target",
+	remove: "will be removed",
 };
 // After a write, the same states read as what happened.
-const writtenText = { ...stateText, add: "added", conflict: "replaced" };
+const writtenText = {
+	...stateText,
+	add: "added",
+	conflict: "replaced",
+	remove: "removed",
+};
 
 function renderEnv(plan, written = false) {
 	return [
@@ -982,6 +1003,16 @@ function renderEnv(plan, written = false) {
 
 const profiles = () => registry.profiles ?? [];
 const profileNamed = (name) => profiles().find((item) => item.name === name);
+const profileKey = (name) => {
+	const profile = profileNamed(name);
+	const group = workspaceNamed(profile?.source)?.group;
+	return JSON.stringify([
+		profile,
+		registry.workspaces
+			.filter((item) => item.group === group)
+			.map((item) => item.name),
+	]);
+};
 
 function describeProfile(profile) {
 	const group = workspaceNamed(profile.source)?.group;
@@ -992,20 +1023,22 @@ function describeProfile(profile) {
 		`From ${profile.source} to ${group ? `the rest of ${group}` : "its group (source not registered)"}`,
 		profile.file,
 		profile.keys === "all" ? "all keys" : profile.keys.join(", "),
+		profile.prune && "removes keys the source lacks",
 		...kept,
-	].join(" · ");
+	]
+		.filter(Boolean)
+		.join(" · ");
 }
 
 function renderProfiles() {
 	const list = profiles();
 	$("#profiles").hidden = list.length === 0;
 	$("#env-form-title").hidden = list.length === 0;
-	// A preview stands for the profile as it was saved; a later save or delete drops it.
-	const shown = view.profile;
+	// A preview stands for the profile as saved and the group as registered when it was
+	// made; a later save, delete or workspace change drops it.
 	if (
-		shown &&
-		JSON.stringify(profileNamed(shown.profile.name)) !==
-			JSON.stringify(shown.profile)
+		view.profile &&
+		profileKey(view.profile.profile.name) !== view.profile.key
 	)
 		view.profile = null;
 	$("#profile-list").replaceChildren(
@@ -1046,10 +1079,9 @@ function renderProfileResult(shown) {
 	const { profile, results, applied } = shown;
 	const plans = results.filter((item) => item.plan);
 	const changes = plans.flatMap((item) => item.plan.changes);
-	const conflicts = changes.filter((c) => c.state === "conflict").length;
-	const writes = changes.filter((c) =>
-		["add", "conflict"].includes(c.state),
-	).length;
+	const risk = riskText(changes);
+	const writes = changes.filter(writing).length;
+	const failed = results.length - plans.length;
 	// Cards re-render often (auto-fetch, reloads): the tick lives in the view, not the DOM.
 	const overwrite = el("input", {
 		type: "checkbox",
@@ -1065,19 +1097,20 @@ function renderProfileResult(shown) {
 		const text =
 			writes === 0
 				? "Nothing to write. Every target already matches."
-				: conflicts > 0 && !overwrite.checked
-					? `${plural(conflicts, "key")} already ${conflicts === 1 ? "has" : "have"} a different value. Tick “Replace conflicting values” to continue.`
+				: risk && !overwrite.checked
+					? risk
 					: null;
 		apply.disabled = text != null;
 		reason.textContent =
-			text ?? `Writes to ${plural(plans.length, "workspace")}, one at a time.`;
+			text ??
+			`Writes to ${plural(plans.length, "workspace")}, one at a time.${failed ? ` ${plural(failed, "workspace")} failed in the preview and will be tried again.` : ""}`;
 	};
 	overwrite.addEventListener("change", () => {
 		shown.overwrite = overwrite.checked;
 		gateApply();
 	});
 	apply.addEventListener("click", () =>
-		applyProfile(profile, overwrite.checked),
+		applyProfile(profile, overwrite.checked, results.length),
 	);
 	gateApply();
 	return [
@@ -1097,12 +1130,12 @@ function renderProfileResult(shown) {
 			el(
 				"div",
 				{ className: "commit" },
-				conflicts > 0 &&
+				risk &&
 					el(
 						"label",
 						{ className: "inline" },
 						overwrite,
-						"Replace conflicting values",
+						"Replace differing values and remove keys",
 					),
 				apply,
 				reason,
@@ -1116,16 +1149,16 @@ async function previewProfile(profile) {
 		{ name: profile.name, dryRun: true },
 		{ busy: "Comparing keys…", alert: "profile-error" },
 	);
-	view.profile = results ? { profile, results, applied: false } : null;
+	view.profile = results
+		? { profile, results, applied: false, key: profileKey(profile.name) }
+		: null;
 	render();
 }
 
-async function applyProfile(profile, overwrite) {
+async function applyProfile(profile, overwrite, count) {
 	if (
 		!confirm(
-			overwrite
-				? `Write profile ${profile.name} to every target and replace the conflicting values?`
-				: `Write profile ${profile.name} to every target?`,
+			`Write profile ${profile.name} to ${plural(count, "workspace")}${overwrite ? ", replacing differing values and removing keys" : ""}?`,
 		)
 	)
 		return;
@@ -1135,7 +1168,12 @@ async function applyProfile(profile, overwrite) {
 		{ busy: "Writing keys…", alert: "profile-error" },
 	);
 	if (!results) return;
-	view.profile = { profile, results, applied: true };
+	view.profile = {
+		profile,
+		results,
+		applied: true,
+		key: profileKey(profile.name),
+	};
 	render();
 	const failed = results.filter((item) => item.error).length;
 	say(
@@ -1168,6 +1206,26 @@ async function reloadRegistry() {
 	renderRegistry();
 	render();
 }
+
+// Show what a save would replace: the kept keys already saved for this profile and target.
+function fillKeep() {
+	const form = $("#env-form");
+	const profile = profileNamed(form.elements.profile.value.trim());
+	if (!profile) return;
+	const keep = profile.keep ?? {};
+	const target = form.elements.target.value;
+	form.elements.keep.value = Object.hasOwn(keep, target)
+		? keep[target].join(", ")
+		: "";
+}
+$("#env-form").elements.profile.addEventListener("change", fillKeep);
+$("#env-form").elements.target.addEventListener("change", fillKeep);
+// Enter in the name field saves the profile instead of previewing the form.
+$("#env-form").elements.profile.addEventListener("keydown", (event) => {
+	if (event.key !== "Enter") return;
+	event.preventDefault();
+	$("#profile-save").click();
+});
 
 $("#profile-save").addEventListener("click", async () => {
 	const name = $("#env-form").elements.profile.value.trim();
@@ -1233,6 +1291,9 @@ $("#env-form").addEventListener("change", (event) => {
 	form.elements.keys.disabled = !selected;
 	form.elements.keys.hidden = !selected;
 	form.elements.publicKeys.disabled = !selected;
+	// Removing keys the source lacks only makes sense when mirroring the whole file.
+	form.elements.prune.disabled = selected;
+	if (selected) form.elements.prune.checked = false;
 	if (selected) form.elements.keys.focus();
 });
 $("#env-form").addEventListener("input", () => {
@@ -1352,7 +1413,7 @@ $("#env-apply").addEventListener("click", async () => {
 	if (
 		!confirm(
 			overwrite
-				? "Write these keys and replace the conflicting values?"
+				? "Write these keys, replacing differing values and removing keys?"
 				: "Write these keys to the target file?",
 		)
 	)

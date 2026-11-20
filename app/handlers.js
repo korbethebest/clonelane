@@ -96,7 +96,8 @@ export function createHandlers(config, { statusCache } = {}) {
 	const selection = (input) =>
 		input.scope === "selected"
 			? { keys: list(input.keys), publicKeys: list(input.publicKeys) }
-			: { keys: "all" };
+			: // A checkbox posts "on"; removing keys only applies to a whole-file mirror.
+				{ keys: "all", prune: input.prune === "on" || input.prune === true };
 	return {
 		registry: () => readRegistry(config),
 		status: async ({ group }) => {
@@ -188,24 +189,21 @@ export function createHandlers(config, { statusCache } = {}) {
 				rebase: rebase === true,
 				fetch: dryRun !== true,
 			}),
-		// Saves the form as a profile. Kept keys are per target: this sets the chosen
-		// target's and keeps those saved earlier for the others.
-		profileSave: async (input) => {
-			const name = String(input.name ?? "");
-			const registry = await readRegistry(config);
-			const keep = {
-				...registry.profiles?.find((item) => item.name === name)?.keep,
-			};
+		// Saves the form as a profile. Kept keys are per target: the field sets (or, empty,
+		// clears) the chosen target's; the others' saved entries are kept.
+		profileSave: (input) => {
 			const target = String(input.target ?? "");
-			delete keep[target];
-			if (target && list(input.keep).length) keep[target] = list(input.keep);
-			return saveProfile(config, {
-				name,
-				source: String(input.source ?? ""),
-				file: input.file || ".env",
-				...selection(input),
-				keep,
-			});
+			return saveProfile(
+				config,
+				{
+					name: String(input.name ?? ""),
+					source: String(input.source ?? ""),
+					file: input.file || ".env",
+					...selection(input),
+					keep: { [target]: list(input.keep) },
+				},
+				{ keepFor: target },
+			);
 		},
 		profileRemove: async ({ name }) => {
 			await removeProfile(config, String(name ?? ""));

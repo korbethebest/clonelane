@@ -168,6 +168,10 @@
 							All keys in the source file
 						</label>
 						<label class="inline">
+							<input type="checkbox" name="prune" />
+							Also remove keys the source doesn't have
+						</label>
+						<label class="inline">
 							<input type="radio" name="scope" value="selected" />
 							Only these keys
 						</label>
@@ -213,7 +217,7 @@
 				<div class="commit">
 					<label id="overwrite-row" class="inline" hidden>
 						<input id="overwrite" type="checkbox" />
-						Replace conflicting values
+						Replace differing values and remove keys
 					</label>
 					<button
 						id="env-apply"

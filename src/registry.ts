@@ -20,6 +20,8 @@ export interface EnvProfile {
 	publicKeys?: string[];
 	/** Per target workspace name: keys that stay local there (never added or overwritten). */
 	keep?: Record<string, string[]>;
+	/** Also remove target keys the source lacks (needs keys "all"). */
+	prune?: boolean;
 }
 
 export interface Registry {
@@ -39,6 +41,7 @@ function validProfile(item: EnvProfile): boolean {
 		) &&
 		(item.keys === "all" || strings(item.keys)) &&
 		(item.publicKeys === undefined || strings(item.publicKeys)) &&
+		(item.prune === undefined || typeof item.prune === "boolean") &&
 		(item.keep === undefined ||
 			(item.keep != null &&
 				typeof item.keep === "object" &&
@@ -222,10 +225,16 @@ export function selectWorkspaces(
 	return selected;
 }
 
-/** Create or replace an env profile. Stores key names only; never reads a .env file. */
+/**
+ * Create or replace an env profile. Stores key names only; never reads a .env file.
+ * With `keepFor`, `profile.keep` holds only that target's kept keys (none clears them):
+ * the other targets' saved entries are carried over, minus any the new source or key
+ * selection no longer allows. The merge happens under the registry lock.
+ */
 export async function saveProfile(
 	path: string,
 	profile: EnvProfile,
+	options: { keepFor?: string } = {},
 ): Promise<EnvProfile> {
 	validName(profile.name, "profile name");
 	validateFile(profile.file);
@@ -233,20 +242,38 @@ export async function saveProfile(
 		file: profile.file,
 		keys: profile.keys,
 		publicKeys: profile.publicKeys,
+		prune: profile.prune,
 	});
-	const saved: EnvProfile = {
-		name: profile.name,
-		source: profile.source,
-		file: profile.file,
-		keys: profile.keys,
-		...(profile.publicKeys?.length ? { publicKeys: profile.publicKeys } : {}),
-		...(profile.keep && Object.keys(profile.keep).length
-			? { keep: profile.keep }
-			: {}),
-	};
+	let saved: EnvProfile | undefined;
 	await edit(path, (registry) => {
 		const source = find(registry, profile.source);
-		for (const [name, keys] of Object.entries(profile.keep ?? {})) {
+		const allowed = (name: string, keys: string[]) => {
+			const target = registry.workspaces.find((item) => item.name === name);
+			return (
+				target != null &&
+				target !== source &&
+				target.group === source.group &&
+				(profile.keys === "all" ||
+					keys.every((key) => profile.keys.includes(key)))
+			);
+		};
+		let keep = profile.keep ?? {};
+		if (options.keepFor !== undefined) {
+			const { keepFor } = options;
+			const previous =
+				registry.profiles?.find((item) => item.name === profile.name)?.keep ??
+				{};
+			keep = Object.fromEntries(
+				Object.entries(previous).filter(
+					([name, keys]) => name !== keepFor && allowed(name, keys),
+				),
+			);
+			const own = Object.hasOwn(profile.keep ?? {}, keepFor)
+				? profile.keep?.[keepFor]
+				: undefined;
+			if (own?.length) keep[keepFor] = own;
+		}
+		for (const [name, keys] of Object.entries(keep)) {
 			const target = find(registry, name);
 			if (target === source || target.group !== source.group)
 				fail(
@@ -257,21 +284,28 @@ export async function saveProfile(
 				fail("ENV_KEYS", "Select at least one key to keep.");
 			validateKeys({ file: profile.file, keys: "all", keep: keys });
 			// With an explicit list, a key outside it is never copied: keeping it means nothing.
-			if (
-				profile.keys !== "all" &&
-				keys.some((key) => !profile.keys.includes(key))
-			)
+			if (!allowed(name, keys))
 				fail(
 					"ENV_KEYS",
 					"Kept keys must be among the profile's selected keys.",
 				);
 		}
+		saved = {
+			name: profile.name,
+			source: profile.source,
+			file: profile.file,
+			keys: profile.keys,
+			...(profile.publicKeys?.length ? { publicKeys: profile.publicKeys } : {}),
+			...(Object.keys(keep).length ? { keep } : {}),
+			...(profile.prune ? { prune: true } : {}),
+		};
+		const kept = saved;
 		registry.profiles = [
-			...(registry.profiles ?? []).filter((item) => item.name !== saved.name),
-			saved,
+			...(registry.profiles ?? []).filter((item) => item.name !== kept.name),
+			kept,
 		];
 	});
-	return saved;
+	return saved as EnvProfile;
 }
 
 export async function removeProfile(path: string, name: string): Promise<void> {

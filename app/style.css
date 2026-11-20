@@ -756,6 +756,7 @@ details.more .grid {
 }
 
 .state.conflict,
+.state.remove,
 .error {
 	color: var(--bad);
 }

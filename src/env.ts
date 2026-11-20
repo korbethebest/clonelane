@@ -20,11 +20,16 @@ export interface EnvOptions {
 	publicKeys?: string[];
 	/** Keys that stay local in the target: never added or overwritten, reported as "kept". */
 	keep?: string[];
+	/**
+	 * With keys "all": also remove target keys the source does not define (state "remove"),
+	 * except kept ones. Applying a removal needs overwrite, like a conflict.
+	 */
+	prune?: boolean;
 }
 
 export interface EnvChange {
 	key: string;
-	state: "add" | "same" | "conflict" | "kept";
+	state: "add" | "same" | "conflict" | "kept" | "remove";
 }
 export interface EnvPlan {
 	source: string;
@@ -47,6 +52,9 @@ export function validateKeys(options: EnvOptions): void {
 	if (new Set(keep).size !== keep.length || keep.some((key) => !KEY.test(key)))
 		fail("ENV_KEYS", "Kept keys must be unique variable names.");
 	if (options.keys === "all") return;
+	// Only a whole-file mirror can say which keys the target should no longer have.
+	if (options.prune)
+		fail("ENV_KEYS", "Removing keys the source lacks needs all keys.");
 	if (
 		options.keys.length === 0 ||
 		new Set(options.keys).size !== options.keys.length ||
@@ -166,6 +174,13 @@ async function prepare(
 				: "conflict";
 		changes.push({ key, state });
 	}
+	if (options.prune)
+		for (const key of Object.keys(to.values).sort())
+			if (!Object.hasOwn(from.values, key))
+				changes.push({
+					key,
+					state: options.keep?.includes(key) ? "kept" : "remove",
+				});
 	const plan: EnvPlan = {
 		source: source.name,
 		target: target.name,
@@ -219,11 +234,13 @@ export async function applyEnv(
 		const { from, to, plan } = await prepare(source, target, options);
 		if (
 			!options.overwrite &&
-			plan.changes.some((change) => change.state === "conflict")
+			plan.changes.some((change) =>
+				["conflict", "remove"].includes(change.state),
+			)
 		)
 			fail(
 				"ENV_CONFLICT",
-				"Target values differ. Review the key-only plan and explicitly enable overwrite.",
+				"Target values differ or keys would be removed. Review the key-only plan and explicitly enable overwrite.",
 			);
 		if (plan.changes.every((change) => ["same", "kept"].includes(change.state)))
 			return plan;
@@ -232,7 +249,8 @@ export async function applyEnv(
 			to.values,
 		);
 		for (const { key, state } of plan.changes)
-			if (state !== "kept") merged[key] = from.values[key] ?? "";
+			if (state === "remove") delete merged[key];
+			else if (state !== "kept") merged[key] = from.values[key] ?? "";
 		const content = serialize(merged);
 		// Compare again before replacement; do not silently discard an editor's update.
 		const latestSource = await readEnv(source, options.file);
@@ -283,6 +301,7 @@ export async function syncEnvProfile(
 				file: profile.file,
 				keys: profile.keys,
 				publicKeys: profile.publicKeys,
+				prune: profile.prune,
 				// Own entries only: a workspace may be named like an Object member.
 				keep:
 					profile.keep && Object.hasOwn(profile.keep, target.name)
@@ -306,7 +325,21 @@ export async function syncEnvProfile(
 	};
 	// A preview only reads, so targets are compared in parallel. Writes go one at a time:
 	// worktrees of one clone share the lock that applyEnv takes.
-	if (options.dryRun) return Promise.all(targets.map(one));
+	if (options.dryRun) {
+		// At most four at once: each target starts several Git processes.
+		const results: ProfileResult[] = new Array(targets.length);
+		let next = 0;
+		const worker = async () => {
+			while (next < targets.length) {
+				const index = next++;
+				results[index] = await one(targets[index] as Workspace);
+			}
+		};
+		await Promise.all(
+			Array.from({ length: Math.min(4, targets.length) }, worker),
+		);
+		return results;
+	}
 	const results: ProfileResult[] = [];
 	for (const target of targets) results.push(await one(target));
 	return results;

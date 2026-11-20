@@ -730,6 +730,98 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		);
 	});
 
+	test("env prune removes keys the source lacks, only with all keys and overwrite", async (t) => {
+		const f = await fixture(t);
+		await writeFile(join(f.first, ".env"), "TOKEN=shared\n");
+		await writeFile(join(f.second, ".env"), "TOKEN=shared\nOLD=1\nPORT=3001\n");
+		const options = {
+			file: ".env",
+			keys: "all" as const,
+			prune: true,
+			keep: ["PORT"],
+		};
+		assert.deepEqual(
+			(await planEnv(f.a, f.b, options)).changes.map(
+				(change) => `${change.key}:${change.state}`,
+			),
+			["TOKEN:same", "OLD:remove", "PORT:kept"],
+		);
+		await assert.rejects(applyEnv(f.a, f.b, options), { code: "ENV_CONFLICT" });
+		await applyEnv(f.a, f.b, { ...options, overwrite: true });
+		assert.deepEqual(
+			{ ...parseEnv(await readFile(join(f.second, ".env"), "utf8")) },
+			{ PORT: "3001", TOKEN: "shared" },
+		);
+		await assert.rejects(
+			planEnv(f.a, f.b, { file: ".env", keys: ["TOKEN"], prune: true }),
+			{ code: "ENV_KEYS" },
+		);
+	});
+
+	test("profile saves merge one target's kept keys and previews keep target order", async (t) => {
+		const f = await fixture(t);
+		const third = join(f.root, "third");
+		await run(f.root, ["clone", f.remote, third]);
+		const config = join(f.root, "registry.json");
+		for (const [name, path] of [
+			["first", f.first],
+			["second", f.second],
+			["third", third],
+		] as const)
+			await addWorkspace(config, { name, path, group: "demo" });
+		const base = { name: "dev", source: "first", file: ".env" };
+		await saveProfile(
+			config,
+			{ ...base, keys: "all", keep: { second: ["PORT"] } },
+			{ keepFor: "second" },
+		);
+		await saveProfile(
+			config,
+			{ ...base, keys: "all", keep: { third: ["DB"] } },
+			{ keepFor: "third" },
+		);
+		assert.deepEqual((await readRegistry(config)).profiles?.[0]?.keep, {
+			second: ["PORT"],
+			third: ["DB"],
+		});
+		// Switching to an explicit list drops carried entries it no longer allows.
+		const narrowed = await saveProfile(
+			config,
+			{ ...base, keys: ["PORT", "TOKEN"], keep: {} },
+			{ keepFor: "second" },
+		);
+		assert.equal(narrowed.keep, undefined);
+		await saveProfile(config, { ...base, keys: "all", prune: true });
+		// first has no .env: every target fails alike, in registry order.
+		await writeFile(join(f.second, ".env"), "A=1\n");
+		const preview = await syncEnvProfile(await readRegistry(config), "dev", {
+			dryRun: true,
+		});
+		assert.deepEqual(
+			preview.map((item) => [item.target, item.error]),
+			[
+				["second", "ENV_SOURCE_MISSING"],
+				["third", "ENV_SOURCE_MISSING"],
+			],
+		);
+		await writeFile(join(f.first, ".env"), "A=1\n");
+		await writeFile(join(third, ".env"), "A=1\nB=2\n");
+		assert.deepEqual(
+			(
+				await syncEnvProfile(await readRegistry(config), "dev", {
+					dryRun: true,
+				})
+			).map((item) => [
+				item.target,
+				item.plan?.changes.map((change) => `${change.key}:${change.state}`),
+			]),
+			[
+				["second", ["A:same"]],
+				["third", ["A:same", "B:remove"]],
+			],
+		);
+	});
+
 	test("env profiles validate on save, follow renames and protect their source", async (t) => {
 		const f = await fixture(t);
 		const config = join(f.root, "registry.json");
