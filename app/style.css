@@ -268,7 +268,15 @@ fieldset.scope {
 	min-width: 0;
 }
 
-fieldset.scope legend {
+fieldset.targets {
+	margin: 0;
+	padding: 0;
+	border: 0;
+	min-width: 0;
+}
+
+fieldset.scope legend,
+fieldset.targets legend {
 	padding: 0;
 	margin-bottom: var(--space-1);
 	color: var(--muted);
@@ -1132,6 +1140,38 @@ button.link:hover:not(:disabled) {
 }
 
 /* One table per target: line the columns up across them. */
-#profile-result th:first-child {
+#env-result th:first-child {
 	width: 40%;
+}
+
+/* Targets: one row per workspace of the source's group, with its own kept keys. */
+#target-list {
+	display: grid;
+	gap: var(--space-2);
+	margin-top: var(--space-2);
+}
+
+.target-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--space-2) var(--space-4);
+}
+
+.target-row > label:first-child {
+	min-width: 12rem;
+	font-weight: 500;
+}
+
+.target-row label.keep {
+	color: var(--muted);
+	font-size: 13px;
+}
+
+.target-row label.keep input {
+	width: 16rem;
+}
+
+.target-row label.keep:has(input:disabled) {
+	opacity: 0.5;
 }

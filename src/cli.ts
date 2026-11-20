@@ -28,6 +28,7 @@ const help = `Clonelane — keep your Git workspaces in the same lane.
                         [--file .env] [--overwrite] [--public-keys VITE_API_URL] [--prune]
   clonelane env profile save <profile> --source <name> --all-keys | --keys API_URL,TOKEN
                         [--file .env] [--public-keys ...] [--keep <workspace>:PORT,DB_NAME ...] [--prune]
+                        [--targets b,c]
   clonelane env profile list | remove <profile>
   clonelane env sync <profile> [--dry-run] [--overwrite]
 
@@ -40,7 +41,7 @@ history lists the branch moves Clonelane made, with their backups. restore moves
 branch back to a backup only if it has not moved since; --dry-run shows the plan.
 env output shows key names and states only. Applying normalizes comments/formatting.
 A profile saves key names, never values. env sync copies from its source to every other
-workspace in that group; each target's --keep keys stay local there. --prune (with
+workspace in that group (or only --targets); each target's --keep keys stay local there. --prune (with
 --all-keys) also removes target keys the source lacks; removals need --overwrite.
 `;
 
@@ -66,6 +67,7 @@ async function main(): Promise<void> {
 			"public-keys": { type: "string" },
 			keep: { type: "string", multiple: true },
 			prune: { type: "boolean" },
+			targets: { type: "string" },
 		},
 	});
 	if (values.help || positionals.length === 0) {
@@ -98,6 +100,7 @@ async function main(): Promise<void> {
 								"public-keys",
 								"keep",
 								"prune",
+								"targets",
 							]
 						: []
 					: [
@@ -179,6 +182,7 @@ async function main(): Promise<void> {
 				publicKeys: values["public-keys"]?.split(","),
 				keep,
 				prune: values.prune,
+				targets: values.targets?.split(","),
 			}),
 		);
 		return;

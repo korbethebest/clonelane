@@ -5,7 +5,7 @@ import { parseEnv } from "node:util";
 import { ClonelaneError, fail } from "./errors.ts";
 import { atomicWrite, readOptional, withLock } from "./files.ts";
 import { gitSucceeds } from "./git.ts";
-import type { Registry } from "./registry.ts";
+import type { EnvProfile, Registry } from "./registry.ts";
 import {
 	assertIdentity,
 	inspectWorkspace,
@@ -274,27 +274,48 @@ export interface ProfileResult {
 }
 
 /**
- * Plans (dryRun) or applies a saved env profile from its source to every other workspace
- * in the source's group, each with its own kept keys. Targets are handled
+ * Plans (dryRun) or applies an env profile (a saved one by name, or an unsaved one) from its
+ * source to its targets: every other workspace in the source's group, or only those listed,
+ * each with its own kept keys. Targets are handled
  * independently (previews in parallel, writes one at a time): one target's conflict or error is reported and does not stop the others.
  */
 export async function syncEnvProfile(
 	registry: Registry,
-	name: string,
+	which: string | EnvProfile,
 	options: { dryRun?: boolean; overwrite?: boolean } = {},
 ): Promise<ProfileResult[]> {
-	const profile = registry.profiles?.find((item) => item.name === name);
-	if (!profile) fail("PROFILE", `Env profile "${name}" does not exist.`);
+	const profile =
+		typeof which === "string"
+			? registry.profiles?.find((item) => item.name === which)
+			: which;
+	if (!profile) fail("PROFILE", `Env profile "${which}" does not exist.`);
 	const source = registry.workspaces.find(
 		(item) => item.name === profile.source,
 	);
 	if (!source)
 		fail("WORKSPACE", `Workspace "${profile.source}" is not registered.`);
-	const targets = registry.workspaces.filter(
+	const members = registry.workspaces.filter(
 		(item) => item.group === source.group && item !== source,
 	);
+	const unknown = profile.targets?.find(
+		(name) => !members.some((item) => item.name === name),
+	);
+	if (unknown)
+		fail(
+			"PROFILE_TARGET",
+			`"${unknown}" is not another workspace in group "${source.group}".`,
+		);
+	const listed = profile.targets;
+	const targets = listed
+		? members.filter((item) => listed.includes(item.name))
+		: members;
 	if (targets.length === 0)
-		fail("EMPTY", `No other workspace is in group "${source.group}".`);
+		fail(
+			"EMPTY",
+			listed
+				? "This profile has no targets left."
+				: `No other workspace is in group "${source.group}".`,
+		);
 	const one = async (target: Workspace): Promise<ProfileResult> => {
 		try {
 			const plan = await (options.dryRun ? planEnv : applyEnv)(source, target, {

@@ -758,7 +758,7 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		);
 	});
 
-	test("profile saves merge one target's kept keys and previews keep target order", async (t) => {
+	test("profile targets limit the group, follow renames, and previews keep target order", async (t) => {
 		const f = await fixture(t);
 		const third = join(f.root, "third");
 		await run(f.root, ["clone", f.remote, third]);
@@ -770,27 +770,43 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		] as const)
 			await addWorkspace(config, { name, path, group: "demo" });
 		const base = { name: "dev", source: "first", file: ".env" };
-		await saveProfile(
-			config,
-			{ ...base, keys: "all", keep: { second: ["PORT"] } },
-			{ keepFor: "second" },
+		// Only third: second is left alone, and a kept key must belong to a target.
+		await assert.rejects(
+			saveProfile(config, {
+				...base,
+				keys: "all",
+				targets: ["third"],
+				keep: { second: ["PORT"] },
+			}),
+			{ code: "PROFILE_KEEP" },
 		);
-		await saveProfile(
-			config,
-			{ ...base, keys: "all", keep: { third: ["DB"] } },
-			{ keepFor: "third" },
+		await assert.rejects(
+			saveProfile(config, { ...base, keys: "all", targets: ["first"] }),
+			{ code: "PROFILE_TARGET" },
 		);
-		assert.deepEqual((await readRegistry(config)).profiles?.[0]?.keep, {
-			second: ["PORT"],
-			third: ["DB"],
-		});
-		// Switching to an explicit list drops carried entries it no longer allows.
-		const narrowed = await saveProfile(
-			config,
-			{ ...base, keys: ["PORT", "TOKEN"], keep: {} },
-			{ keepFor: "second" },
+		await saveProfile(config, { ...base, keys: "all", targets: ["third"] });
+		await writeFile(join(f.first, ".env"), "A=1\n");
+		assert.deepEqual(
+			(
+				await syncEnvProfile(await readRegistry(config), "dev", {
+					dryRun: true,
+				})
+			).map((item) => item.target),
+			["third"],
 		);
-		assert.equal(narrowed.keep, undefined);
+		// Targets follow a rename and are dropped when they leave the group; an emptied
+		// list fails instead of widening to the whole group.
+		await updateWorkspace(config, "third", { name: "three" });
+		assert.deepEqual((await readRegistry(config)).profiles?.[0]?.targets, [
+			"three",
+		]);
+		await updateWorkspace(config, "three", { group: "elsewhere" });
+		await assert.rejects(
+			syncEnvProfile(await readRegistry(config), "dev", { dryRun: true }),
+			{ code: "EMPTY" },
+		);
+		await updateWorkspace(config, "three", { name: "third", group: "demo" });
+		await rm(join(f.first, ".env"));
 		await saveProfile(config, { ...base, keys: "all", prune: true });
 		// first has no .env: every target fails alike, in registry order.
 		await writeFile(join(f.second, ".env"), "A=1\n");
@@ -837,7 +853,7 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		});
 		await assert.rejects(
 			saveProfile(config, { ...base, keys: "all", keep: { first: ["PORT"] } }),
-			{ code: "PROFILE_KEEP" },
+			{ code: "PROFILE_TARGET" },
 		);
 		await assert.rejects(
 			saveProfile(config, { ...base, keys: "all", keep: { second: ["1BAD"] } }),

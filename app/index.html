@@ -151,16 +151,17 @@
 
 			<section id="env" role="tabpanel" aria-labelledby="tab-env" hidden>
 				<div id="profiles" hidden>
-					<h2 class="section-title">Profiles</h2>
+					<h2 class="section-title">Saved profiles</h2>
 					<div id="profile-list"></div>
 					<p id="profile-error" class="alert" role="alert" hidden></p>
-					<div id="profile-result"></div>
 				</div>
-				<h2 id="env-form-title" class="section-title" hidden>One target</h2>
 				<form id="env-form" class="grid">
 					<label>From <select name="source"></select></label>
-					<label>To (same group) <select name="target"></select></label>
-					<p id="env-peers" class="notice wide" role="status" hidden></p>
+					<fieldset class="targets wide">
+						<legend id="targets-legend">To</legend>
+						<div id="target-list"></div>
+						<p id="env-peers" class="notice" role="status" hidden></p>
+					</fieldset>
 					<fieldset class="scope wide">
 						<legend>Keys</legend>
 						<label class="inline">
@@ -192,48 +193,29 @@
 								Browser-exposed keys (only with selected keys)
 								<input name="publicKeys" disabled placeholder="VITE_API_URL" />
 							</label>
-							<label>
-								Keep local in the target (never copied there)
-								<input name="keep" placeholder="PORT, DB_NAME" />
-							</label>
-						</div>
-						<div class="save-profile">
-							<label>
-								Save these options as a profile
-								<input name="profile" placeholder="dev" aria-describedby="profile-help" />
-							</label>
-							<button id="profile-save" type="button">Save profile</button>
-							<p id="profile-help" class="hint">
-								A profile copies from this source to every other workspace in its group at once.
-								Its kept keys are per target: save again with another target to add theirs.
-								Only key names are saved, never values.
-							</p>
 						</div>
 					</details>
 					<div class="actions"><button id="env-plan" type="submit">Preview</button></div>
 				</form>
 				<p id="env-error" class="alert" role="alert" hidden></p>
 				<div id="env-result"></div>
-				<div class="commit">
-					<label id="overwrite-row" class="inline" hidden>
-						<input id="overwrite" type="checkbox" />
-						Replace differing values and remove keys
+				<div class="save-profile">
+					<label>
+						Save as profile
+						<input id="profile-name" placeholder="dev" aria-describedby="profile-help" />
 					</label>
-					<button
-						id="env-apply"
-						type="button"
-						class="primary"
-						disabled
-						aria-describedby="env-reason"
-					>
-						Apply
-					</button>
-					<span id="env-reason" class="reason"></span>
+					<button id="profile-save" type="button">Save profile</button>
+					<p id="profile-help" class="hint">
+						Saves this form to run again later: source, targets, kept keys and key options. With
+						every target ticked, the profile follows the group, including workspaces added later.
+						Only key names are saved, never values.
+					</p>
 				</div>
 				<p class="hint">
 					Keys are copied only between workspaces in the same group. Only key names are shown, never
-					values. Keys that exist only in the target are kept.
-					Applying rewrites the target file without its comments.
+					values. Keys that exist only in a target are kept unless you choose to remove them; keys
+					kept local in a target are never touched. Applying rewrites each target file without its
+					comments.
 				</p>
 			</section>
 		</fieldset>
