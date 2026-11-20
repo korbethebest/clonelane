@@ -1245,3 +1245,18 @@ button.help[aria-expanded="true"] {
 	text-wrap: pretty;
 	box-shadow: 0 6px 20px color-mix(in srgb, var(--text) 14%, transparent);
 }
+
+/* A lease is information, not a problem: its own calm colour, never the warning one. */
+.status-line .lease,
+.target-row .lease-note {
+	color: var(--remote);
+}
+
+.target-row .lease-note {
+	font-size: 13px;
+}
+
+.lease-skip {
+	margin-top: var(--space-4);
+	color: var(--remote);
+}

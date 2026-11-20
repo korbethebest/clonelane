@@ -7,6 +7,7 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Added
 
 - Workspace leases: `clonelane lease take <workspace> --holder <name> [--note] [--minutes]`, `lease release [--holder] [--force]` and `lease list`. While another holder's lease is live, `sync` skips the workspace (`leased`) and `env` and `restore` refuse it (`LEASED`); `--as <holder>` acts as the holder. Leases lapse after their time (default 120 minutes), live per checkout in its `.git` directory, and are advisory. `status` shows the holder (`WorkspaceStatus.lease`); the library adds `takeLease()`, `releaseLease()`, `readLease()` and `workspaceLease()`.
+- Leases in the desktop app: a leased workspace's card says who has it, why and until when, with **Release…** (a confirmed, forced release). Sync previews list it under no change, and the Environment tab marks leased targets and skips them with a note instead of an error.
 
 ## [0.4.0] - 2026-11-20
 

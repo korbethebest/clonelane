@@ -220,7 +220,11 @@ function outcome(item, applied) {
 		: ["fast-forward", "rebase"].includes(item.action) ||
 			item.baseUpdate?.action === "fast-forward";
 	if (changes) return applied ? "updated" : "update";
-	if (item.action === "skip" && item.reason !== "rebase-not-enabled")
+	// A lease is someone else's work in progress, left alone on purpose: nothing to fix.
+	if (
+		item.action === "skip" &&
+		!["rebase-not-enabled", "leased"].includes(item.reason)
+	)
 		return "blocked";
 	return "none";
 }
@@ -363,6 +367,7 @@ function fillTargets() {
 				{ className: "target-row", dataset: { name } },
 				el("label", { className: "inline" }, box, name),
 				el("label", { className: "inline keep" }, "Keep local", keep),
+				el("span", { className: "lease-note" }),
 			);
 		}),
 	);
@@ -432,6 +437,15 @@ function render() {
 	$("#sync-result").replaceChildren(
 		...(view.sync ? renderSync(view.sync) : []),
 	);
+	// Targets someone has leased say so; their preview row explains that they are skipped.
+	for (const row of $("#target-list").children) {
+		const lease = view.statuses?.find(
+			(state) => state.workspace?.name === row.dataset.name,
+		)?.lease;
+		row.querySelector(".lease-note").textContent = lease
+			? leaseText(lease)
+			: "";
+	}
 	if (view.env && view.env.key !== envKey()) view.env = null;
 	$("#env-result").replaceChildren(
 		...(view.env ? renderEnvResult(view.env) : []),
@@ -484,10 +498,37 @@ async function refresh() {
 	render();
 }
 
+const clock = new Intl.DateTimeFormat("en", {
+	hour: "2-digit",
+	minute: "2-digit",
+});
+const dayClock = new Intl.DateTimeFormat("en", {
+	month: "short",
+	day: "numeric",
+	hour: "2-digit",
+	minute: "2-digit",
+});
+// "until 15:30" today, "until Nov 21, 09:00" later.
+function untilText(iso) {
+	const at = new Date(iso);
+	if (Number.isNaN(at.getTime()) || at.getFullYear() > 9999) return "";
+	const today = at.toDateString() === new Date().toDateString();
+	return `until ${(today ? clock : dayClock).format(at)}`;
+}
+const leaseText = (lease) =>
+	[
+		`In use by ${lease.holder}`,
+		lease.note && `(${lease.note})`,
+		untilText(lease.until),
+	]
+		.filter(Boolean)
+		.join(" ");
+
 function workspaceStatus(state) {
 	if (state.error) return [[state.error, "warn"]];
 	const ref = baseRef(state.workspace);
 	const items = [];
+	if (state.lease) items.push([leaseText(state.lease), "lease"]);
 	if (state.operation) items.push(["Git operation in progress", "warn"]);
 	if (state.dirty) items.push(["Uncommitted changes", "warn"]);
 	if (state.interrupted > 0)
@@ -532,6 +573,17 @@ function renderWorkspace(state) {
 				"span",
 				{ className: "card-tools" },
 				showGroup && el("span", { className: "group-tag" }, workspace.group),
+				state.lease &&
+					el(
+						"button",
+						{
+							type: "button",
+							className: "small",
+							ariaLabel: `Release the lease on ${workspace.name}`,
+							onclick: () => releaseWorkspace(workspace, state.lease),
+						},
+						"Release…",
+					),
 				el(
 					"button",
 					{
@@ -734,6 +786,18 @@ async function restoreMove(workspace, operation) {
 	if (result.result === "refused")
 		showError("footer-alert", { message: result.message, code: result.reason });
 	else say(`Restored ${branch} in ${workspace.name} to ${short(result.to)}.`);
+}
+
+async function releaseWorkspace(workspace, lease) {
+	if (
+		!confirm(
+			`Release ${lease.holder}'s lease on ${workspace.name}? Sync and env will no longer skip it, even if ${lease.holder} is still working there.`,
+		)
+	)
+		return;
+	if (!(await call("releaseLease", { name: workspace.name }))) return;
+	await refresh();
+	say(`Released the lease on ${workspace.name}.`);
 }
 
 // Read on first open; a refresh rebuilds the card, so the next open reads again.
@@ -1271,7 +1335,8 @@ function renderEnvResult(shown) {
 	const changes = plans.flatMap((item) => item.plan.changes);
 	const risk = riskText(changes);
 	const writes = changes.filter(writing).length;
-	const failed = results.length - plans.length;
+	const leased = results.filter((item) => item.error === "LEASED").length;
+	const failed = results.length - plans.length - leased;
 	// Cards re-render often (auto-fetch, reloads): the tick lives in the view, not the DOM.
 	const overwrite = el("input", {
 		type: "checkbox",
@@ -1280,13 +1345,15 @@ function renderEnvResult(shown) {
 	const apply = el(
 		"button",
 		{ type: "button", className: "primary" },
-		results.length > 1 ? `Apply to ${results.length} workspaces` : "Apply",
+		results.length - leased > 1
+			? `Apply to ${results.length - leased} workspaces`
+			: "Apply",
 	);
 	const reason = el("span", { className: "reason" });
 	const gateApply = () => {
 		const text =
 			writes === 0
-				? results.length > 1
+				? results.length - leased > 1
 					? "Nothing to write. Every target already matches."
 					: "Nothing to write. The target already matches."
 				: risk && !overwrite.checked
@@ -1295,7 +1362,7 @@ function renderEnvResult(shown) {
 		apply.disabled = text != null;
 		reason.textContent =
 			text ??
-			`Writes ${plural(writes, "key")}${results.length > 1 ? `, one workspace at a time` : ""}.${failed ? ` ${plural(failed, "workspace")} failed in the preview and will be tried again.` : ""}`;
+			`Writes ${plural(writes, "key")}${results.length - leased > 1 ? `, one workspace at a time` : ""}.${failed ? ` ${plural(failed, "workspace")} failed in the preview and will be tried again.` : ""}${leased ? ` ${plural(leased, "leased workspace")} will be skipped.` : ""}`;
 	};
 	overwrite.addEventListener("change", () => {
 		shown.overwrite = overwrite.checked;
@@ -1313,7 +1380,15 @@ function renderEnvResult(shown) {
 		...results.flatMap((item) =>
 			item.plan
 				? renderEnv(item.plan, applied)
-				: [el("p", { className: "error" }, `${item.target}: ${item.message}`)],
+				: item.error === "LEASED"
+					? [leasedRow(item.target)]
+					: [
+							el(
+								"p",
+								{ className: "error" },
+								`${item.target}: ${item.message}`,
+							),
+						],
 		),
 		!applied &&
 			el(
@@ -1332,6 +1407,18 @@ function renderEnvResult(shown) {
 	].filter(Boolean);
 }
 
+// A leased target is skipped on purpose, not broken: say who has it and how to include it.
+function leasedRow(name) {
+	const lease = view.statuses?.find(
+		(state) => state.workspace?.name === name,
+	)?.lease;
+	return el(
+		"p",
+		{ className: "lease-skip" },
+		`${name}: ${lease ? leaseText(lease) : "In use"}, so it is skipped. Release its lease on the Workspaces tab to include it.`,
+	);
+}
+
 async function previewEnv() {
 	const key = envKey();
 	const input = envInput();
@@ -1345,7 +1432,8 @@ async function previewEnv() {
 }
 
 async function applyEnvForm(shown) {
-	const count = shown.results.length;
+	// Leased targets are skipped, so they are not among the workspaces written.
+	const count = shown.results.filter((item) => item.error !== "LEASED").length;
 	const changes = shown.results.flatMap((item) => item.plan?.changes ?? []);
 	const removed = changes.filter((change) => change.state === "remove").length;
 	const replaced = changes.filter(
@@ -1370,11 +1458,20 @@ async function applyEnvForm(shown) {
 	if (!results) return;
 	view.env = { ...shown, results, applied: true };
 	render();
-	const failed = results.filter((item) => item.error).length;
+	const leased = results.filter((item) => item.error === "LEASED").length;
+	const failed = results.filter(
+		(item) => item.error && item.error !== "LEASED",
+	).length;
+	const wrote = results.length - failed - leased;
 	say(
-		failed
-			? `Wrote ${results.length - failed} of ${plural(results.length, "workspace")}; see the errors above.`
-			: `Wrote ${plural(results.length, "workspace")}.`,
+		[
+			failed
+				? `Wrote ${wrote} of ${plural(wrote + failed, "workspace")}; see the errors above.`
+				: `Wrote ${plural(wrote, "workspace")}.`,
+			leased && `Skipped ${plural(leased, "leased workspace")}.`,
+		]
+			.filter(Boolean)
+			.join(" "),
 	);
 }
 
