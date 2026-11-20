@@ -7,6 +7,7 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Added
 
 - Env profiles: `clonelane env profile save|list|remove` saves a named share (source workspace, file, keys, public-key acknowledgement) in the registry, key names only. `clonelane env sync <profile> [--dry-run] [--overwrite]` plans or writes every other workspace in the source's group, one at a time; a failing target is reported without stopping the others.
+- Env profiles in the desktop app: the Environment tab lists saved profiles, previews one across the whole group and applies it (conflicts still need **Replace conflicting values**). **Save profile** in More options saves the form, with **Keep local in the target** as that target's kept keys.
 - Layered overrides: `--keep <workspace>:KEY,…` keeps keys local in that target. Kept keys are never added or overwritten and show as `kept` in plans. The library adds `EnvOptions.keep`, `saveProfile()`, `removeProfile()` and `syncEnvProfile()`.
 
 ### Changed

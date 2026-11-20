@@ -18,9 +18,12 @@ import {
 	listOperations,
 	planEnv,
 	readRegistry,
+	removeProfile,
 	removeWorkspace,
 	restoreOperation,
+	saveProfile,
 	selectWorkspaces,
+	syncEnvProfile,
 	syncWorkspaces,
 	updateWorkspace,
 } from "../dist/index.js";
@@ -84,12 +87,16 @@ export function createHandlers(config, { statusCache } = {}) {
 		return (apply ? applyEnv : planEnv)(source, target, {
 			file: input.file || ".env",
 			// The whole file unless the user chose "Only these keys".
-			...(input.scope === "selected"
-				? { keys: list(input.keys), publicKeys: list(input.publicKeys) }
-				: { keys: "all" }),
+			...selection(input),
 			overwrite: apply && input.overwrite === true,
+			...(list(input.keep).length ? { keep: list(input.keep) } : {}),
 		});
 	};
+	// The form's key selection, as the core takes it.
+	const selection = (input) =>
+		input.scope === "selected"
+			? { keys: list(input.keys), publicKeys: list(input.publicKeys) }
+			: { keys: "all" };
 	return {
 		registry: () => readRegistry(config),
 		status: async ({ group }) => {
@@ -180,6 +187,35 @@ export function createHandlers(config, { statusCache } = {}) {
 				dryRun: dryRun === true,
 				rebase: rebase === true,
 				fetch: dryRun !== true,
+			}),
+		// Saves the form as a profile. Kept keys are per target: this sets the chosen
+		// target's and keeps those saved earlier for the others.
+		profileSave: async (input) => {
+			const name = String(input.name ?? "");
+			const registry = await readRegistry(config);
+			const keep = {
+				...registry.profiles?.find((item) => item.name === name)?.keep,
+			};
+			const target = String(input.target ?? "");
+			delete keep[target];
+			if (target && list(input.keep).length) keep[target] = list(input.keep);
+			return saveProfile(config, {
+				name,
+				source: String(input.source ?? ""),
+				file: input.file || ".env",
+				...selection(input),
+				keep,
+			});
+		},
+		profileRemove: async ({ name }) => {
+			await removeProfile(config, String(name ?? ""));
+			return String(name);
+		},
+		// Same contract as clonelane env sync: a preview (dryRun) never writes.
+		profileSync: async ({ name, dryRun, overwrite }) =>
+			syncEnvProfile(await readRegistry(config), String(name ?? ""), {
+				dryRun: dryRun === true,
+				overwrite: dryRun !== true && overwrite === true,
 			}),
 		envPlan: (input) => env(input, false),
 		envApply: (input) => env(input, true),

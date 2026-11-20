@@ -49,7 +49,14 @@ function table(headers, rows, className = "") {
 
 let registry = { workspaces: [] };
 let loaded = false; // Avoid an "empty" flash before the registry is read.
-const view = { statuses: null, sync: null, env: null, loading: 0 };
+const view = {
+	statuses: null,
+	sync: null,
+	env: null,
+	// Profile preview or result: { profile (as saved when previewed), results, applied }.
+	profile: null,
+	loading: 0,
+};
 let syncPreview = null;
 let envPreview = null;
 
@@ -114,7 +121,13 @@ async function call(name, input, { busy, alert = "footer-alert" } = {}) {
 
 const group = () => $("#group").value;
 const syncKey = () => JSON.stringify([group(), $("#rebase").checked]);
-const envInput = () => Object.fromEntries(new FormData($("#env-form")));
+// The profile name field only names a save; it is not part of what a preview stands for.
+const envInput = () => {
+	const { profile, ...input } = Object.fromEntries(
+		new FormData($("#env-form")),
+	);
+	return input;
+};
 const envKey = () => JSON.stringify(envInput());
 const workspaceNamed = (name) =>
 	registry.workspaces.find((item) => item.name === name);
@@ -286,6 +299,7 @@ function render() {
 		...(view.sync ? renderSync(view.sync) : []),
 	);
 	$("#env-result").replaceChildren(...(view.env ? renderEnv(view.env) : []));
+	renderProfiles();
 	renderGuide();
 	gate();
 }
@@ -935,9 +949,12 @@ const stateText = {
 	add: "will be added",
 	same: "already the same",
 	conflict: "different value",
+	kept: "kept local in the target",
 };
+// After a write, the same states read as what happened.
+const writtenText = { ...stateText, add: "added", conflict: "replaced" };
 
-function renderEnv(plan) {
+function renderEnv(plan, written = false) {
 	return [
 		el(
 			"p",
@@ -956,12 +973,213 @@ function renderEnv(plan) {
 				el(
 					"span",
 					{ className: `state ${change.state}` },
-					stateText[change.state] ?? change.state,
+					(written ? writtenText : stateText)[change.state] ?? change.state,
 				),
 			]),
 		),
 	];
 }
+
+const profiles = () => registry.profiles ?? [];
+const profileNamed = (name) => profiles().find((item) => item.name === name);
+
+function describeProfile(profile) {
+	const group = workspaceNamed(profile.source)?.group;
+	const kept = Object.entries(profile.keep ?? {}).map(
+		([name, keys]) => `${name} keeps ${keys.join(", ")}`,
+	);
+	return [
+		`From ${profile.source} to ${group ? `the rest of ${group}` : "its group (source not registered)"}`,
+		profile.file,
+		profile.keys === "all" ? "all keys" : profile.keys.join(", "),
+		...kept,
+	].join(" · ");
+}
+
+function renderProfiles() {
+	const list = profiles();
+	$("#profiles").hidden = list.length === 0;
+	$("#env-form-title").hidden = list.length === 0;
+	// A preview stands for the profile as it was saved; a later save or delete drops it.
+	const shown = view.profile;
+	if (
+		shown &&
+		JSON.stringify(profileNamed(shown.profile.name)) !==
+			JSON.stringify(shown.profile)
+	)
+		view.profile = null;
+	$("#profile-list").replaceChildren(
+		...list.map((profile) =>
+			el(
+				"div",
+				{ className: "profile" },
+				el(
+					"div",
+					{ className: "profile-text" },
+					el("strong", {}, profile.name),
+					el("p", { className: "profile-meta" }, describeProfile(profile)),
+				),
+				el(
+					"button",
+					{ type: "button", onclick: () => previewProfile(profile) },
+					"Preview",
+				),
+				el(
+					"button",
+					{
+						type: "button",
+						className: "small",
+						ariaLabel: `Delete profile ${profile.name}`,
+						onclick: () => deleteProfile(profile),
+					},
+					"Delete",
+				),
+			),
+		),
+	);
+	$("#profile-result").replaceChildren(
+		...(view.profile ? renderProfileResult(view.profile) : []),
+	);
+}
+
+function renderProfileResult(shown) {
+	const { profile, results, applied } = shown;
+	const plans = results.filter((item) => item.plan);
+	const changes = plans.flatMap((item) => item.plan.changes);
+	const conflicts = changes.filter((c) => c.state === "conflict").length;
+	const writes = changes.filter((c) =>
+		["add", "conflict"].includes(c.state),
+	).length;
+	// Cards re-render often (auto-fetch, reloads): the tick lives in the view, not the DOM.
+	const overwrite = el("input", {
+		type: "checkbox",
+		checked: shown.overwrite === true,
+	});
+	const apply = el(
+		"button",
+		{ type: "button", className: "primary" },
+		"Apply to all",
+	);
+	const reason = el("span", { className: "reason" });
+	const gateApply = () => {
+		const text =
+			writes === 0
+				? "Nothing to write. Every target already matches."
+				: conflicts > 0 && !overwrite.checked
+					? `${plural(conflicts, "key")} already ${conflicts === 1 ? "has" : "have"} a different value. Tick “Replace conflicting values” to continue.`
+					: null;
+		apply.disabled = text != null;
+		reason.textContent =
+			text ?? `Writes to ${plural(plans.length, "workspace")}, one at a time.`;
+	};
+	overwrite.addEventListener("change", () => {
+		shown.overwrite = overwrite.checked;
+		gateApply();
+	});
+	apply.addEventListener("click", () =>
+		applyProfile(profile, overwrite.checked),
+	);
+	gateApply();
+	return [
+		el(
+			"p",
+			{ className: "plan-title" },
+			applied
+				? `Profile ${profile.name}: written`
+				: `Profile ${profile.name}: preview`,
+		),
+		...results.flatMap((item) =>
+			item.plan
+				? renderEnv(item.plan, applied)
+				: [el("p", { className: "error" }, `${item.target}: ${item.message}`)],
+		),
+		!applied &&
+			el(
+				"div",
+				{ className: "commit" },
+				conflicts > 0 &&
+					el(
+						"label",
+						{ className: "inline" },
+						overwrite,
+						"Replace conflicting values",
+					),
+				apply,
+				reason,
+			),
+	].filter(Boolean);
+}
+
+async function previewProfile(profile) {
+	const results = await call(
+		"profileSync",
+		{ name: profile.name, dryRun: true },
+		{ busy: "Comparing keys…", alert: "profile-error" },
+	);
+	view.profile = results ? { profile, results, applied: false } : null;
+	render();
+}
+
+async function applyProfile(profile, overwrite) {
+	if (
+		!confirm(
+			overwrite
+				? `Write profile ${profile.name} to every target and replace the conflicting values?`
+				: `Write profile ${profile.name} to every target?`,
+		)
+	)
+		return;
+	const results = await call(
+		"profileSync",
+		{ name: profile.name, overwrite },
+		{ busy: "Writing keys…", alert: "profile-error" },
+	);
+	if (!results) return;
+	view.profile = { profile, results, applied: true };
+	render();
+	const failed = results.filter((item) => item.error).length;
+	say(
+		failed
+			? `Wrote ${results.length - failed} of ${plural(results.length, "workspace")}; see the errors above.`
+			: `Wrote ${plural(results.length, "workspace")}.`,
+	);
+}
+
+async function deleteProfile(profile) {
+	if (!confirm(`Delete profile ${profile.name}? No .env file is changed.`))
+		return;
+	if (
+		!(await call(
+			"profileRemove",
+			{ name: profile.name },
+			{ alert: "profile-error" },
+		))
+	)
+		return;
+	await reloadRegistry();
+	say(`Deleted profile ${profile.name}.`);
+}
+
+// Profiles live in the registry; re-read it without re-reading every workspace.
+async function reloadRegistry() {
+	const data = await call("registry", {});
+	if (!data) return;
+	registry = data;
+	renderRegistry();
+	render();
+}
+
+$("#profile-save").addEventListener("click", async () => {
+	const name = $("#env-form").elements.profile.value.trim();
+	const saved = await call(
+		"profileSave",
+		{ ...envInput(), name },
+		{ busy: "Saving profile…", alert: "env-error" },
+	);
+	if (!saved) return;
+	await reloadRegistry();
+	say(`Saved profile ${saved.name}.`);
+});
 
 // Tabs follow the WAI-ARIA pattern: one tab stop, arrow keys move between tabs.
 const tabs = [...document.querySelectorAll("[role=tab]")];

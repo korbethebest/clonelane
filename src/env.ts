@@ -257,8 +257,8 @@ export interface ProfileResult {
 
 /**
  * Plans (dryRun) or applies a saved env profile from its source to every other workspace
- * in the source's group, each with its own kept keys. Targets run one at a time and
- * independently: one target's conflict or error is reported and does not stop the others.
+ * in the source's group, each with its own kept keys. Targets are handled
+ * independently (previews in parallel, writes one at a time): one target's conflict or error is reported and does not stop the others.
  */
 export async function syncEnvProfile(
 	registry: Registry,
@@ -277,9 +277,7 @@ export async function syncEnvProfile(
 	);
 	if (targets.length === 0)
 		fail("EMPTY", `No other workspace is in group "${source.group}".`);
-	const results: ProfileResult[] = [];
-	// One at a time: worktrees of one clone share the lock that applyEnv takes.
-	for (const target of targets) {
+	const one = async (target: Workspace): Promise<ProfileResult> => {
 		try {
 			const plan = await (options.dryRun ? planEnv : applyEnv)(source, target, {
 				file: profile.file,
@@ -292,9 +290,9 @@ export async function syncEnvProfile(
 						: undefined,
 				overwrite: options.overwrite,
 			});
-			results.push({ target: target.name, plan });
+			return { target: target.name, plan };
 		} catch (error) {
-			results.push({
+			return {
 				target: target.name,
 				...(error instanceof ClonelaneError
 					? { error: error.code, message: error.message }
@@ -303,8 +301,13 @@ export async function syncEnvProfile(
 							message:
 								"Operation failed. Details were suppressed to protect local secrets.",
 						}),
-			});
+			};
 		}
-	}
+	};
+	// A preview only reads, so targets are compared in parallel. Writes go one at a time:
+	// worktrees of one clone share the lock that applyEnv takes.
+	if (options.dryRun) return Promise.all(targets.map(one));
+	const results: ProfileResult[] = [];
+	for (const target of targets) results.push(await one(target));
 	return results;
 }

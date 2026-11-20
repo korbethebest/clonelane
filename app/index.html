@@ -150,6 +150,13 @@
 			</section>
 
 			<section id="env" role="tabpanel" aria-labelledby="tab-env" hidden>
+				<div id="profiles" hidden>
+					<h2 class="section-title">Profiles</h2>
+					<div id="profile-list"></div>
+					<p id="profile-error" class="alert" role="alert" hidden></p>
+					<div id="profile-result"></div>
+				</div>
+				<h2 id="env-form-title" class="section-title" hidden>One target</h2>
 				<form id="env-form" class="grid">
 					<label>From <select name="source"></select></label>
 					<label>To (same group) <select name="target"></select></label>
@@ -181,6 +188,22 @@
 								Browser-exposed keys (only with selected keys)
 								<input name="publicKeys" disabled placeholder="VITE_API_URL" />
 							</label>
+							<label>
+								Keep local in the target (never copied there)
+								<input name="keep" placeholder="PORT, DB_NAME" />
+							</label>
+						</div>
+						<div class="save-profile">
+							<label>
+								Save these options as a profile
+								<input name="profile" placeholder="dev" aria-describedby="profile-help" />
+							</label>
+							<button id="profile-save" type="button">Save profile</button>
+							<p id="profile-help" class="hint">
+								A profile copies from this source to every other workspace in its group at once.
+								Its kept keys are per target: save again with another target to add theirs.
+								Only key names are saved, never values.
+							</p>
 						</div>
 					</details>
 					<div class="actions"><button id="env-plan" type="submit">Preview</button></div>
