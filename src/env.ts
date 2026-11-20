@@ -157,6 +157,12 @@ async function prepare(
 	const to = await readEnv(target, options.file);
 	if (from.raw == null)
 		fail("ENV_SOURCE_MISSING", "Source environment file does not exist.");
+	// Mirroring an empty source would empty every target: refuse instead.
+	if (options.prune && Object.keys(from.values).length === 0)
+		fail(
+			"ENV_SOURCE_EMPTY",
+			"The source file defines no keys, so removing the keys it lacks would empty the target.",
+		);
 	const keys =
 		options.keys === "all" ? Object.keys(from.values).sort() : options.keys;
 	const changes: EnvChange[] = [];
@@ -276,8 +282,9 @@ export interface ProfileResult {
 /**
  * Plans (dryRun) or applies an env profile (a saved one by name, or an unsaved one) from its
  * source to its targets: every other workspace in the source's group, or only those listed,
- * each with its own kept keys. Targets are handled
- * independently (previews in parallel, writes one at a time): one target's conflict or error is reported and does not stop the others.
+ * each with its own kept keys. Targets are handled independently (previews in parallel,
+ * writes one at a time): one target's conflict or error is reported and does not stop the
+ * others.
  */
 export async function syncEnvProfile(
 	registry: Registry,

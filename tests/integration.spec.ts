@@ -756,6 +756,11 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 			planEnv(f.a, f.b, { file: ".env", keys: ["TOKEN"], prune: true }),
 			{ code: "ENV_KEYS" },
 		);
+		// An empty source would empty the target: refused, not planned as removals.
+		await writeFile(join(f.first, ".env"), "");
+		await assert.rejects(planEnv(f.a, f.b, { ...options, keep: [] }), {
+			code: "ENV_SOURCE_EMPTY",
+		});
 	});
 
 	test("profile targets limit the group, follow renames, and previews keep target order", async (t) => {

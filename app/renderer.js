@@ -76,6 +76,19 @@ function showHelp(button, pinned) {
 	if (!pop.matches(":popover-open")) pop.showPopover({ source: button });
 	button.ariaExpanded = "true";
 }
+// Pressing ? while its pinned popover is open light-dismisses it before the click; note it,
+// so the click does not open it again.
+let dismissedBy = null;
+document.addEventListener(
+	"pointerdown",
+	(event) => {
+		const button = event.target.closest?.("button.help");
+		const pop = button && helpPop(button);
+		dismissedBy =
+			pop?.matches(":popover-open") && pop.dataset.pinned ? button : null;
+	},
+	true,
+);
 document.addEventListener("click", (event) => {
 	// A popover inside a summary or label must not toggle or focus what holds it.
 	if (event.target.closest?.(".help-pop")) {
@@ -87,6 +100,11 @@ document.addEventListener("click", (event) => {
 	// Inside a summary, the click must not also open or close the details.
 	event.preventDefault();
 	const pop = helpPop(button);
+	if (dismissedBy === button) {
+		dismissedBy = null;
+		if (pop?.matches(":popover-open")) pop.hidePopover();
+		return;
+	}
 	if (pop?.matches(":popover-open") && pop.dataset.pinned) pop.hidePopover();
 	else showHelp(button, true);
 });
@@ -1328,9 +1346,19 @@ async function previewEnv() {
 
 async function applyEnvForm(shown) {
 	const count = shown.results.length;
+	const changes = shown.results.flatMap((item) => item.plan?.changes ?? []);
+	const removed = changes.filter((change) => change.state === "remove").length;
+	const replaced = changes.filter(
+		(change) => change.state === "conflict",
+	).length;
+	// Name what will be lost, not just that something will.
+	const losses = [
+		replaced && `replace ${plural(replaced, "value")}`,
+		removed && `remove ${plural(removed, "key")}`,
+	].filter(Boolean);
 	if (
 		!confirm(
-			`Write keys to ${plural(count, "workspace")}${shown.overwrite ? ", replacing differing values and removing keys" : ""}?`,
+			`Write keys to ${plural(count, "workspace")}${shown.overwrite && losses.length ? ` and ${losses.join(" and ")}` : ""}?`,
 		)
 	)
 		return;

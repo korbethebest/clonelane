@@ -129,7 +129,7 @@ clonelane env profile remove dev
 
 - Targets are every other workspace in the source's group, at the time you run `env sync`, or only those named with `--targets b,c`. A named target that leaves the group is dropped from the list; a list left empty fails rather than widening to the whole group.
 - Layers, highest first: a target's kept keys (`--keep <workspace>:KEY,…`, repeat per workspace) → the source's values → keys only the target has. Kept keys are never added or overwritten and show as `kept`.
-- `--prune` (with `--all-keys`, on `env plan|apply` or saved in a profile) also removes target keys the source does not define, so the targets mirror the source. They show as `remove`, and like conflicts they are only applied with `--overwrite`. Kept keys are never removed.
+- `--prune` (with `--all-keys`, on `env plan|apply` or saved in a profile) also removes target keys the source does not define, so the targets mirror the source. They show as `remove`, and like conflicts they are only applied with `--overwrite`. Kept keys are never removed, and an empty source file is refused rather than emptying the targets.
 - Each target is planned and written on its own, with all the rules above. A conflict or error in one target is reported in its result and does not stop the others; the exit code is 1 if any target failed.
 - `--keys`, `--public-keys` and `--file` work as for `env plan`, and are checked when the profile is saved. Browser-exposed keys need `--public-keys` even if some targets keep them, because the other targets (and workspaces that join the group later) receive them. With `--keys`, kept keys must be among them.
 - `env sync --dry-run` takes no `--overwrite` and, like `env plan`, exits 0 when it finds conflicts.

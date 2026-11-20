@@ -194,8 +194,8 @@ export function createHandlers(config, { statusCache } = {}) {
 				rebase: rebase === true,
 				fetch: dryRun !== true,
 			}),
-		// Saves the form as a profile. Kept keys are per target: the field sets (or, empty,
-		// clears) the chosen target's; the others' saved entries are kept.
+		// Saves the form as the whole profile: its targets and their kept keys replace the
+		// saved ones (an unticked target's kept keys are dropped).
 		profileSave: (input) => saveProfile(config, profileFrom(input)),
 		profileRemove: async ({ name }) => {
 			await removeProfile(config, String(name ?? ""));
