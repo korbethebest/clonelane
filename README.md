@@ -114,6 +114,24 @@ clonelane env plan --source a --target b --keys VITE_API_URL --public-keys VITE_
 
 This is an acknowledgement that the value may be exposed to browsers, **not** a detector that can prove a value is safe. Never select server credentials as public variables. Do not put secret values in command-line arguments.
 
+### Profiles: one source, the whole group, local overrides
+
+A profile saves a share by name so a group of clones can be kept in step with one command. It stores key names only, in the registry, never values.
+
+```sh
+# Copy every key from a to the rest of its group, but b keeps its own PORT and DB_NAME:
+clonelane env profile save dev --source a --all-keys --keep b:PORT,DB_NAME
+clonelane env sync dev --dry-run    # one key-only plan per target
+clonelane env sync dev              # write each target; --overwrite after reviewing conflicts
+clonelane env profile list
+clonelane env profile remove dev
+```
+
+- Targets are every other workspace in the source's group, at the time you run `env sync`.
+- Layers, highest first: a target's kept keys (`--keep <workspace>:KEY,…`, repeat per workspace) → the source's values → keys only the target has. Kept keys are never added or overwritten and show as `kept`.
+- Each target is planned and written on its own, with all the rules above. A conflict or error in one target is reported in its result and does not stop the others; the exit code is 1 if any target failed.
+- `--keys`, `--public-keys` and `--file` work as for `env plan`, and are checked when the profile is saved. Renaming a workspace updates its profiles; removing a profile's source is refused until the profile is removed.
+
 There is **no central plaintext secret database**: this version reads an explicitly chosen existing source `.env` and writes the target. It does not provide an encrypted vault, keychain integration or network secret sharing yet. The source and destination remain plaintext and readable to processes with filesystem access. POSIX files use mode `0600`; on Windows, inherited directory ACLs apply and must be appropriate. See [SECURITY.md](SECURITY.md).
 
 ## Desktop app
@@ -176,9 +194,9 @@ Integration tests create local bare repositories, clones and linked worktrees un
 
 ## Next milestones
 
-1. Explicit workspace leases for cooperating tools, and a restore button in the desktop app.
+1. Explicit workspace leases for cooperating tools.
 2. Reviewed, persisted sync policies and a background worker. No unattended rebase in this release.
-3. Environment profiles, layered overrides and a provider interface for an existing encrypted secret manager / OS keychain. No custom cryptography.
+3. A provider interface for an existing encrypted secret manager / OS keychain, as a source for env profiles. No custom cryptography.
 4. TUI overview, optional editor integration and support for intentionally stacked feature branches.
 
 MIT licensed. No telemetry and no automatic package publication.

@@ -3,9 +3,15 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 
-import { applyEnv, planEnv } from "./env.ts";
+import { applyEnv, planEnv, syncEnvProfile } from "./env.ts";
 import { ClonelaneError, fail } from "./errors.ts";
-import { addWorkspace, readRegistry, selectWorkspaces } from "./registry.ts";
+import {
+	addWorkspace,
+	readRegistry,
+	removeProfile,
+	saveProfile,
+	selectWorkspaces,
+} from "./registry.ts";
 import { listOperations, restoreOperation } from "./restore.ts";
 import { fetchWorkspaces, syncWorkspaces } from "./sync.ts";
 import { inspectWorkspace } from "./workspaces.ts";
@@ -20,6 +26,10 @@ const help = `Clonelane — keep your Git workspaces in the same lane.
   clonelane restore <id> [--group <group>] [--dry-run]
   clonelane env plan|apply --source <name> --target <name> --all-keys | --keys API_URL,TOKEN
                         [--file .env] [--overwrite] [--public-keys VITE_API_URL]
+  clonelane env profile save <profile> --source <name> --all-keys | --keys API_URL,TOKEN
+                        [--file .env] [--public-keys ...] [--keep <workspace>:PORT,DB_NAME ...]
+  clonelane env profile list | remove <profile>
+  clonelane env sync <profile> [--dry-run] [--overwrite]
 
 Global: --config <file> (default: ~/.config/clonelane/registry.json), --help
 
@@ -29,6 +39,8 @@ sync fetches the selected base before updating. No command pushes.
 history lists the branch moves Clonelane made, with their backups. restore moves a
 branch back to a backup only if it has not moved since; --dry-run shows the plan.
 env output shows key names and states only. Applying normalizes comments/formatting.
+A profile saves key names, never values. env sync copies from its source to every other
+workspace in that group; each target's --keep keys stay local there.
 `;
 
 async function main(): Promise<void> {
@@ -51,6 +63,7 @@ async function main(): Promise<void> {
 			file: { type: "string" },
 			overwrite: { type: "boolean" },
 			"public-keys": { type: "string" },
+			keep: { type: "string", multiple: true },
 		},
 	});
 	if (values.help || positionals.length === 0) {
@@ -67,15 +80,22 @@ async function main(): Promise<void> {
 		sync: ["group", "dry-run", "rebase"],
 		history: ["group", "json"],
 		restore: ["group", "dry-run"],
-		env: [
-			"source",
-			"target",
-			"keys",
-			"all-keys",
-			"file",
-			"public-keys",
-			...(argument === "apply" ? ["overwrite"] : []),
-		],
+		env:
+			argument === "sync"
+				? ["dry-run", "overwrite"]
+				: argument === "profile"
+					? positionals[2] === "save"
+						? ["source", "keys", "all-keys", "file", "public-keys", "keep"]
+						: []
+					: [
+							"source",
+							"target",
+							"keys",
+							"all-keys",
+							"file",
+							"public-keys",
+							...(argument === "apply" ? ["overwrite"] : []),
+						],
 	};
 	if (
 		Object.keys(values).some(
@@ -106,7 +126,60 @@ async function main(): Promise<void> {
 		});
 		return;
 	}
+	if (command === "env" && argument === "profile") {
+		const [, , action, name] = positionals;
+		if (action === "list" && positionals.length === 3) {
+			print((await readRegistry(config)).profiles ?? []);
+			return;
+		}
+		if (action === "remove" && name && positionals.length === 4) {
+			await removeProfile(config, name);
+			print({ removed: name });
+			return;
+		}
+		if (
+			action !== "save" ||
+			!name ||
+			positionals.length !== 4 ||
+			!values.source ||
+			!values.keys === !values["all-keys"]
+		)
+			fail(
+				"USAGE",
+				"env profile save requires a name, --source and either --all-keys or --keys.",
+			);
+		const keep: Record<string, string[]> = {};
+		for (const entry of values.keep ?? []) {
+			const at = entry.indexOf(":");
+			const workspace = entry.slice(0, at);
+			if (at < 1 || Object.hasOwn(keep, workspace))
+				fail("USAGE", "Use --keep <workspace>:KEY,KEY once per workspace.");
+			keep[workspace] = entry.slice(at + 1).split(",");
+		}
+		print(
+			await saveProfile(config, {
+				name,
+				source: values.source,
+				file: values.file ?? ".env",
+				keys: values.keys?.split(",") ?? "all",
+				publicKeys: values["public-keys"]?.split(","),
+				keep,
+			}),
+		);
+		return;
+	}
 	const registry = await readRegistry(config);
+	if (command === "env" && argument === "sync") {
+		if (positionals.length !== 3 || !positionals[2])
+			fail("USAGE", "env sync requires one profile name.");
+		const results = await syncEnvProfile(registry, positionals[2], {
+			dryRun: values["dry-run"],
+			overwrite: values.overwrite,
+		});
+		print(results);
+		if (results.some((result) => result.error)) process.exitCode = 1;
+		return;
+	}
 	if (command === "env") {
 		if (
 			!["plan", "apply"].includes(argument ?? "") ||

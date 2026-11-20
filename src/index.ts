@@ -1,12 +1,19 @@
-export type { EnvChange, EnvOptions, EnvPlan } from "./env.ts";
-export { applyEnv, planEnv } from "./env.ts";
+export type {
+	EnvChange,
+	EnvOptions,
+	EnvPlan,
+	ProfileResult,
+} from "./env.ts";
+export { applyEnv, planEnv, syncEnvProfile } from "./env.ts";
 export { ClonelaneError } from "./errors.ts";
 export type { Operation } from "./journal.ts";
-export type { Registry } from "./registry.ts";
+export type { EnvProfile, Registry } from "./registry.ts";
 export {
 	addWorkspace,
 	readRegistry,
+	removeProfile,
 	removeWorkspace,
+	saveProfile,
 	selectWorkspaces,
 	updateWorkspace,
 } from "./registry.ts";
