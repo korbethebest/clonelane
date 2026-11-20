@@ -12,6 +12,7 @@ export const reasons = {
 	"git-operation-in-progress": "a Git operation is in progress",
 	"handled-by-checkout": "handled by the checkout",
 	"inspection-or-lock-failed": "could not inspect or lock it",
+	leased: "in use by someone else (leased)",
 	"local-base-current": "local base is current",
 	"local-base-missing": "no local base branch",
 	"published-or-merge-branch": "published or contains merges",

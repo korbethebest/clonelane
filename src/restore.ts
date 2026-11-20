@@ -5,6 +5,7 @@ import { fail } from "./errors.ts";
 import { withLock } from "./files.ts";
 import { git, gitSucceeds, moveRefLocked } from "./git.ts";
 import { begin, finish, type Operation, readOperations } from "./journal.ts";
+import { blocks, leasedMessage } from "./lease.ts";
 import { busyElsewhere } from "./sync.ts";
 import {
 	assertIdentity,
@@ -44,7 +45,7 @@ export async function listOperations(
 export async function restoreOperation(
 	workspace: Workspace,
 	id: string,
-	options: { dryRun?: boolean } = {},
+	options: { dryRun?: boolean; as?: string } = {},
 ): Promise<RestoreResult> {
 	const initial = await inspectWorkspace(workspace);
 	const run = async (): Promise<RestoreResult> => {
@@ -82,6 +83,8 @@ export async function restoreOperation(
 			reason,
 			message,
 		});
+		if (state.lease && blocks(state.lease, options.as))
+			return refuse("leased", leasedMessage(workspace.name, state.lease));
 		if (operation.state === "started")
 			return refuse("in-progress", "This operation is still running.");
 		if (operation.state === "failed")
