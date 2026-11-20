@@ -198,9 +198,12 @@ export function createHandlers(config, { statusCache } = {}) {
 		// Saves the form as the whole profile: its targets and their kept keys replace the
 		// saved ones (an unticked target's kept keys are dropped).
 		profileSave: (input) => saveProfile(config, profileFrom(input)),
-		// The app is nobody's holder: releasing is always a forced, confirmed action.
-		releaseLease: async ({ name }) =>
-			releaseLease(await named(name), { force: true }),
+		// Releases only the holder the user confirmed; an unreadable lease ("?") needs force.
+		releaseLease: async ({ name, holder }) =>
+			releaseLease(await named(name), {
+				holder: String(holder ?? ""),
+				force: holder === "?",
+			}),
 		profileRemove: async ({ name }) => {
 			await removeProfile(config, String(name ?? ""));
 			return String(name);

@@ -381,6 +381,7 @@ function fillTargets() {
 			? `No other workspace is in group "${source.group}". Keys are only copied within one group: register another clone of this repository in "${source.group}", or change a group with Edit on the Workspaces tab.`
 			: "";
 	note.hidden = !note.textContent;
+	showLeaseNotes();
 }
 
 function render() {
@@ -437,15 +438,7 @@ function render() {
 	$("#sync-result").replaceChildren(
 		...(view.sync ? renderSync(view.sync) : []),
 	);
-	// Targets someone has leased say so; their preview row explains that they are skipped.
-	for (const row of $("#target-list").children) {
-		const lease = view.statuses?.find(
-			(state) => state.workspace?.name === row.dataset.name,
-		)?.lease;
-		row.querySelector(".lease-note").textContent = lease
-			? leaseText(lease)
-			: "";
-	}
+	showLeaseNotes();
 	if (view.env && view.env.key !== envKey()) view.env = null;
 	$("#env-result").replaceChildren(
 		...(view.env ? renderEnvResult(view.env) : []),
@@ -795,7 +788,14 @@ async function releaseWorkspace(workspace, lease) {
 		)
 	)
 		return;
-	if (!(await call("releaseLease", { name: workspace.name }))) return;
+	// Only the lease the dialog named: if someone else took it meanwhile, this is refused.
+	if (
+		!(await call("releaseLease", {
+			name: workspace.name,
+			holder: lease.holder,
+		}))
+	)
+		return;
 	await refresh();
 	say(`Released the lease on ${workspace.name}.`);
 }
@@ -1252,11 +1252,29 @@ function envInput() {
 	return input;
 }
 // A preview stands for the form and the group as registered when it was made.
+const leaseOf = (name) =>
+	view.statuses?.find((state) => state.workspace?.name === name)?.lease;
+// A preview stands for the form, the group and its leases as they were when it was made:
+// a lease taken, released or lapsed since makes it stale.
 const envKey = () =>
 	JSON.stringify([
 		envInput(),
-		registry.workspaces.map((item) => [item.name, item.group]),
+		registry.workspaces.map((item) => [
+			item.name,
+			item.group,
+			leaseOf(item.name)?.holder ?? null,
+		]),
 	]);
+
+// Targets someone has leased say so; their preview row explains that they are skipped.
+function showLeaseNotes() {
+	for (const row of $("#target-list").children) {
+		const lease = leaseOf(row.dataset.name);
+		row.querySelector(".lease-note").textContent = lease
+			? leaseText(lease)
+			: "";
+	}
+}
 
 function applyScope() {
 	const form = $("#env-form");
@@ -1352,13 +1370,15 @@ function renderEnvResult(shown) {
 	const reason = el("span", { className: "reason" });
 	const gateApply = () => {
 		const text =
-			writes === 0
-				? results.length - leased > 1
-					? "Nothing to write. Every target already matches."
-					: "Nothing to write. The target already matches."
-				: risk && !overwrite.checked
-					? risk
-					: null;
+			results.length === leased
+				? "Every target is leased, so nothing will be written."
+				: writes === 0
+					? results.length - leased > 1
+						? "Nothing to write. Every target already matches."
+						: "Nothing to write. The target already matches."
+					: risk && !overwrite.checked
+						? risk
+						: null;
 		apply.disabled = text != null;
 		reason.textContent =
 			text ??
