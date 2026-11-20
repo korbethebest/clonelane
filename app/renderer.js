@@ -47,6 +47,75 @@ function table(headers, rows, className = "") {
 	);
 }
 
+// Help: a "?" button whose text opens in a popover. Hover shows it while the pointer is
+// there; a click (or Enter) keeps it open until Esc or a click elsewhere.
+let helpCount = 0;
+function help(text, label) {
+	const id = `help-dynamic-${++helpCount}`;
+	return [
+		el(
+			"button",
+			{
+				type: "button",
+				className: "help",
+				ariaLabel: label,
+				ariaExpanded: "false",
+				dataset: { help: id },
+			},
+			"?",
+		),
+		el("div", { id, className: "help-pop", popover: "auto" }, text),
+	];
+}
+const helpPop = (button) => document.getElementById(button.dataset.help);
+function showHelp(button, pinned) {
+	const pop = helpPop(button);
+	if (!pop) return;
+	pop.dataset.pinned = pinned ? "true" : "";
+	// The button is the popover's anchor, so it opens right under it.
+	if (!pop.matches(":popover-open")) pop.showPopover({ source: button });
+	button.ariaExpanded = "true";
+}
+document.addEventListener("click", (event) => {
+	// A popover inside a summary or label must not toggle or focus what holds it.
+	if (event.target.closest?.(".help-pop")) {
+		event.preventDefault();
+		return;
+	}
+	const button = event.target.closest?.("button.help");
+	if (!button) return;
+	// Inside a summary, the click must not also open or close the details.
+	event.preventDefault();
+	const pop = helpPop(button);
+	if (pop?.matches(":popover-open") && pop.dataset.pinned) pop.hidePopover();
+	else showHelp(button, true);
+});
+document.addEventListener("mouseover", (event) => {
+	const button = event.target.closest?.("button.help");
+	if (button && !helpPop(button)?.matches(":popover-open"))
+		showHelp(button, false);
+});
+document.addEventListener("mouseout", (event) => {
+	const button = event.target.closest?.("button.help");
+	if (!button || button.contains(event.relatedTarget)) return;
+	const pop = helpPop(button);
+	if (pop?.matches(":popover-open") && !pop.dataset.pinned) pop.hidePopover();
+});
+document.addEventListener(
+	"toggle",
+	(event) => {
+		const pop = event.target;
+		if (!pop.classList?.contains("help-pop") || event.newState !== "closed")
+			return;
+		pop.dataset.pinned = "";
+		const button = document.querySelector(
+			`button.help[data-help="${CSS.escape(pop.id)}"]`,
+		);
+		if (button) button.ariaExpanded = "false";
+	},
+	true,
+);
+
 let registry = { workspaces: [] };
 let loaded = false; // Avoid an "empty" flash before the registry is read.
 const view = {
@@ -196,16 +265,29 @@ function renderRegistry() {
 	$("#group-options").replaceChildren(
 		...groups.map((value) => el("option", { value })),
 	);
+	// Sources follow the header's group filter; with several groups, each is its own section.
 	const source = $("#env-form [name=source]");
-	fillSelect(
-		source,
-		registry.workspaces.map((item) => item.name),
+	const previous = source.value;
+	const shown = registry.workspaces.filter(
+		(item) => !group() || item.group === group(),
 	);
+	const shownGroups = [...new Set(shown.map((item) => item.group))];
+	const option = (item) => el("option", { value: item.name }, item.name);
+	source.replaceChildren(
+		...(shownGroups.length > 1
+			? shownGroups.map((name) =>
+					el(
+						"optgroup",
+						{ label: name },
+						shown.filter((item) => item.group === name).map(option),
+					),
+				)
+			: shown.map(option)),
+	);
+	if (shown.some((item) => item.name === previous)) source.value = previous;
 	// Start from a workspace that has someone to share with.
 	if (peers(source.value).length === 0) {
-		const shared = registry.workspaces.find(
-			(item) => peers(item.name).length > 0,
-		);
+		const shared = shown.find((item) => peers(item.name).length > 0);
 		if (shared) source.value = shared.name;
 	}
 	fillTargets();
@@ -529,11 +611,14 @@ function renderWorkspace(state) {
 					dataset: { key: `${workspace.name}:moves` },
 					ontoggle: (event) => loadMoves(event.currentTarget, state),
 				},
-				el("summary", {}, "Branch moves"),
 				el(
-					"p",
-					{ className: "hint" },
-					"Every branch Clonelane moved, with a backup of where it was. Restore puts a branch back, only if nothing changed since.",
+					"summary",
+					{},
+					"Branch moves",
+					...help(
+						"Every branch Clonelane moved, with a backup of where it was. Restore puts a branch back, only if nothing changed since.",
+						"About branch moves",
+					),
 				),
 				el("p", { className: "moves-slot empty" }, "Loading…"),
 			),
@@ -825,11 +910,19 @@ function editForm(workspace) {
 			"Name",
 			el("input", { name: "newName", value: workspace.name, required: true }),
 		),
-		el("label", {}, "Group", group),
 		el(
-			"p",
-			{ className: "hint wide" },
-			"Workspaces in the same group sync together and can share .env keys. Use one group for every clone and worktree of a repository.",
+			"label",
+			{},
+			el(
+				"span",
+				{ className: "label-row" },
+				"Group",
+				...help(
+					"Workspaces in the same group sync together and can share .env keys. Use one group for every clone and worktree of a repository.",
+					"About groups",
+				),
+			),
+			group,
 		),
 		el(
 			"div",
@@ -1050,23 +1143,28 @@ function renderEnv(plan, written = false) {
 // ticked by default), each with its own kept keys. A profile is this form, saved.
 const profiles = () => registry.profiles ?? [];
 
-// What the form asks for, as flat fields: kept keys travel as "keep:<workspace>".
+// What the form asks for, as flat fields: kept keys travel as "keep:<workspace>". Fields
+// are read directly: FormData skips them while the UI is locked (disabled) for a call.
 function envInput() {
-	const data = new FormData($("#env-form"));
-	const source = String(data.get("source") ?? "");
-	const targets = data.getAll("target").map(String);
+	const form = $("#env-form");
+	const fields = form.elements;
+	const source = fields.source.value;
+	const selected = fields.scope.value === "selected";
+	const targets = [...form.querySelectorAll("[name=target]")]
+		.filter((box) => box.checked)
+		.map((box) => box.value);
 	const input = {
 		source,
 		targets: targets.join(","),
 		allTargets: targets.length > 0 && targets.length === peers(source).length,
-		scope: String(data.get("scope") ?? "all"),
-		keys: String(data.get("keys") ?? ""),
-		publicKeys: String(data.get("publicKeys") ?? ""),
-		file: String(data.get("file") ?? ""),
-		prune: data.get("prune") === "on",
+		scope: selected ? "selected" : "all",
+		keys: selected ? fields.keys.value : "",
+		publicKeys: selected ? fields.publicKeys.value : "",
+		file: fields.file.value,
+		prune: !selected && fields.prune.checked,
 	};
 	for (const name of targets) {
-		const keep = String(data.get(`keep:${name}`) ?? "").trim();
+		const keep = (fields[`keep:${name}`]?.value ?? "").trim();
 		if (keep) input[`keep:${name}`] = keep;
 	}
 	return input;
@@ -1262,6 +1360,14 @@ async function openProfile(profile) {
 		return;
 	}
 	showError("profile-error", null);
+	// The header's group filter may hide this profile's source: show every group again.
+	const hidden = ![...form.elements.source.options].some(
+		(option) => option.value === profile.source,
+	);
+	if (hidden) {
+		$("#group").value = "";
+		renderRegistry();
+	}
 	form.elements.source.value = profile.source;
 	fillTargets();
 	const keep = profile.keep ?? {};
@@ -1282,6 +1388,8 @@ async function openProfile(profile) {
 	form.elements.file.value = profile.file === ".env" ? "" : profile.file;
 	$("#profile-name").value = profile.name;
 	await previewEnv();
+	// Workspaces and Sync follow the filter too; re-read them once the preview is up.
+	if (hidden) await refresh();
 }
 
 async function deleteProfile(profile) {

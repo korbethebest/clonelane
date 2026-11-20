@@ -1201,3 +1201,47 @@ fieldset.scope label.prune {
 #profiles {
 	margin-bottom: var(--space-6);
 }
+
+/* Help: a small "?" next to a label; its text opens in a popover under it. */
+.label-row {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--space-1);
+}
+
+button.help {
+	min-height: 0;
+	width: 18px;
+	height: 18px;
+	padding: 0;
+	border-radius: 50%;
+	font-size: 11px;
+	font-weight: 600;
+	line-height: 1;
+	color: var(--muted);
+	vertical-align: middle;
+	margin-left: var(--space-1);
+}
+
+button.help:hover:not(:disabled),
+button.help[aria-expanded="true"] {
+	color: var(--text);
+}
+
+.help-pop {
+	inset: auto;
+	position-area: bottom span-right;
+	position-try-fallbacks: flip-block, flip-inline;
+	margin: var(--space-1) 0 0;
+	max-width: min(24rem, calc(100vw - 32px));
+	padding: var(--space-2) var(--space-3);
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	background: var(--panel);
+	color: var(--text);
+	font-size: 13px;
+	font-weight: 400;
+	line-height: 1.5;
+	text-wrap: pretty;
+	box-shadow: 0 6px 20px color-mix(in srgb, var(--text) 14%, transparent);
+}
