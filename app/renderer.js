@@ -1263,47 +1263,64 @@ function fetchDue(now = Date.now()) {
 	);
 }
 
+// The last failure shown, so a fetch that keeps failing is not announced every time.
+let lastFailure = "";
 async function autoFetch() {
 	if (!autoFetchOn() || pending > 0 || backgroundFetch || !fetchDue()) return;
 	lastAttempt = Date.now();
 	const scope = group();
 	const before = baseHeads();
+	const failure = (error) => ({ ok: false, message: String(error) });
 	backgroundFetch = (async () => {
-		const fetched = await window.clonelane.call("fetch", { group: scope });
+		// Never rejects: actions waiting on it in call() must still run.
+		const fetched = await window.clonelane
+			.call("fetch", { group: scope })
+			.catch(failure);
 		// Read status inside the same wait, so no action can see it half-updated.
-		const statuses = await window.clonelane.call("status", { group: scope });
+		const statuses = await window.clonelane
+			.call("status", { group: scope })
+			.catch(failure);
 		return { fetched, statuses };
 	})().finally(() => {
 		backgroundFetch = null;
 	});
 	const { fetched, statuses } = await backgroundFetch;
-	// The user switched groups meanwhile: these statuses are for another view.
-	if (group() !== scope) return;
-	if (statuses.ok) view.statuses = statuses.data;
+	const current = group() === scope;
+	if (current && statuses.ok) view.statuses = statuses.data;
 	const moved = readable().filter(
 		(state) =>
 			before.has(state.workspace.path) &&
 			before.get(state.workspace.path) !== state.baseHead,
 	);
-	// New remote commits make an earlier preview stale, as after Fetch remote.
-	if (moved.length && view.sync && !view.sync.applied) {
+	// New remote commits make an earlier preview stale, as after Fetch remote. When the
+	// new heads cannot be compared (another group, failed read), assume they moved.
+	const comparable = current && statuses.ok;
+	const anyFetched =
+		fetched.ok && fetched.data.some((item) => item.result === "fetched");
+	if (
+		(comparable ? moved.length > 0 : anyFetched) &&
+		view.sync &&
+		!view.sync.applied
+	) {
 		view.sync = null;
 		syncPreview = null;
 	}
 	render();
-	// An action that waited for this fetch owns the status bar now.
-	if (pending > 0) return;
 	const failed = fetched.ok
 		? fetched.data.filter((item) => item.result === "failed")
 		: [];
-	if (!fetched.ok || failed.length)
-		say(
-			`Automatic fetch failed${failed.length ? ` for ${failed.map((item) => item.name).join(", ")}` : ""}. Click Fetch remote to see why.`,
-		);
-	else if (moved.length)
+	const problem =
+		!fetched.ok || failed.length
+			? `Automatic fetch failed${failed.length ? ` for ${failed.map((item) => item.name).join(", ")}` : ""}. Click Fetch remote to see why.`
+			: "";
+	// An action that waited for this fetch owns the status bar now.
+	if (pending > 0 || !current) return;
+	if (problem && problem !== lastFailure) say(problem);
+	else if (comparable && moved.length)
 		say(
 			`Fetched automatically: new commits on ${[...new Set(moved.map((state) => baseRef(state.workspace)))].join(", ")}.`,
 		);
+	lastFailure = problem;
 }
 setInterval(autoFetch, 60 * 1000);
 
