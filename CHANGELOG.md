@@ -4,6 +4,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-20
+
 ### Added
 
 - A first-run guide in the desktop app: three real steps (add a workspace, add another clone of the same repository, fetch and preview a sync) that check themselves off from what you actually did. It opens for new users only, can be hidden, and reopens from **Guide** in the header.
@@ -43,4 +45,6 @@ First public release.
 - Git is launched by absolute path from absolute `PATH` entries only, so a `git.exe` in a working tree never runs in place of Git, even when `PATH` contains an empty or relative entry.
 - Credentials in remote URLs, including remote-helper URLs (`<transport>::<address>`), are never stored or printed.
 
+[Unreleased]: https://github.com/korbethebest/clonelane/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/korbethebest/clonelane/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/korbethebest/clonelane/releases/tag/v0.1.0
