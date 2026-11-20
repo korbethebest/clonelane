@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- A first-run guide in the desktop app: three real steps (add a workspace, add another clone of the same repository, fetch and preview a sync) that check themselves off from what you actually did. It opens for new users only, can be hidden, and reopens from **Guide** in the header.
+
 - Faster `fetch`: separate clones of one repository contact the remote once. The other clones copy the fresh base from that clone on disk (no network, no credential helper) and fall back to their own remote if that fails. `FetchResult.source` names the clone a copy came from. Checking a workspace before a fetch also starts one Git process fewer.
 - Faster `status`: reading a workspace starts two Git processes instead of six. `status` in the CLI and the desktop app opt in (`inspectWorkspace(workspace, { reuseIdentity: true })`) to reuse a recent identity check while the `.git` entry and the repository and user Git config files are unchanged, for at most five minutes. Everything that changes a branch or a file checks in full. Ahead/behind counts are cached per commit pair, except in shallow clones. The desktop app shows the last known state at start while it reads the current one, with its controls disabled until then.
 - A recovery journal. Every branch move `sync` makes is recorded with its backup ref and outcome in the clone's `.git` directory. `clonelane history` lists them, and `clonelane restore <id> [--dry-run]` moves a branch back to its backup when nothing has changed since; otherwise it refuses with a reason. Restores are backed up and journaled too.

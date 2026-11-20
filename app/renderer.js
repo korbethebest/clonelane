@@ -235,12 +235,17 @@ function render() {
 		.map((field) => [field.name, field.value]);
 	list.ariaBusy = String(Boolean(view.loading));
 	if (loaded && registry.workspaces.length === 0)
+		// The guide carries the first-run message when it is open.
 		list.replaceChildren(
-			el(
-				"p",
-				{ className: "empty" },
-				"No workspaces yet. Add a clone or worktree of a repository to get started.",
-			),
+			...(guideShown()
+				? []
+				: [
+						el(
+							"p",
+							{ className: "empty" },
+							"No workspaces yet. Add a clone or worktree of a repository to get started.",
+						),
+					]),
 		);
 	else if (!view.statuses && view.loading)
 		list.replaceChildren(
@@ -273,6 +278,7 @@ function render() {
 		...(view.sync ? renderSync(view.sync) : []),
 	);
 	$("#env-result").replaceChildren(...(view.env ? renderEnv(view.env) : []));
+	renderGuide();
 	gate();
 }
 
@@ -281,6 +287,9 @@ async function refresh() {
 	if (!data) return;
 	registry = data;
 	loaded = true;
+	// Someone who already has workspaces is not new: keep the guide closed for them.
+	if (recall(GUIDE) == null)
+		remember(GUIDE, registry.workspaces.length > 0 ? "hidden" : "shown");
 	renderRegistry();
 	if (registry.workspaces.length === 0) {
 		view.statuses = null;
@@ -900,13 +909,13 @@ $("#env-form").addEventListener("input", () => {
 	}
 });
 
-$("#fetch").addEventListener("click", async () => {
+async function fetchRemote() {
 	const fetched = await call(
 		"fetch",
 		{ group: group() },
 		{ busy: "Fetching from the remote…" },
 	);
-	if (!fetched) return;
+	if (!fetched) return false;
 	// Remote refs moved, so an earlier sync preview no longer holds.
 	if (!view.sync?.applied) {
 		view.sync = null;
@@ -926,7 +935,9 @@ $("#fetch").addEventListener("click", async () => {
 			`Fetched ${plural(fetched.length, "workspace")}${copied ? ` (${copied} copied from another clone on this computer)` : ""}.`,
 		);
 	}
-});
+	return failed.length === 0;
+}
+$("#fetch").addEventListener("click", fetchRemote);
 
 $("#browse").addEventListener("click", async () => {
 	const path = await call("pickFolder", {}, { alert: "register-error" });
@@ -953,7 +964,7 @@ $("#register").addEventListener("submit", async (event) => {
 	say(`Added ${workspace.name}.`);
 });
 
-$("#sync-preview").addEventListener("click", async () => {
+async function previewSync() {
 	const key = syncKey();
 	const results = await call(
 		"sync",
@@ -962,8 +973,10 @@ $("#sync-preview").addEventListener("click", async () => {
 	);
 	view.sync = results ? { results, applied: false } : null;
 	syncPreview = results ? key : null;
+	if (results) markPreviewed(results);
 	render();
-});
+}
+$("#sync-preview").addEventListener("click", previewSync);
 
 $("#sync-apply").addEventListener("click", async () => {
 	if (
@@ -1024,6 +1037,198 @@ $("#env-apply").addEventListener("click", async () => {
 	$("#overwrite").checked = false;
 	render();
 	say("Keys written.");
+});
+
+// First-run guide: three real steps that check themselves off from real state. The hidden
+// choice and the previewed workspaces live in localStorage under versioned keys, with an
+// in-memory copy so the guide still behaves within a session when storage is unavailable.
+const GUIDE = "clonelane.guide:v1";
+const PREVIEWED = "clonelane.guide.previewed:v2";
+const memory = new Map();
+function recall(key) {
+	if (memory.has(key)) return memory.get(key);
+	try {
+		return localStorage.getItem(key);
+	} catch {
+		return null;
+	}
+}
+function remember(key, value) {
+	memory.set(key, value);
+	try {
+		localStorage.setItem(key, value);
+	} catch {
+		// Kept in memory for this session only.
+	}
+}
+const guideShown = () => recall(GUIDE) !== "hidden";
+
+// Paths of workspaces that have been in a successful sync preview, so step 3 follows the
+// registry in use rather than any preview ever made.
+function previewedPaths() {
+	try {
+		const paths = JSON.parse(recall(PREVIEWED) ?? "[]");
+		return Array.isArray(paths) ? paths : [];
+	} catch {
+		return [];
+	}
+}
+function markPreviewed(results) {
+	const paths = results
+		.map((item) => workspaceNamed(item.name)?.path)
+		.filter(Boolean);
+	if (paths.length)
+		remember(
+			PREVIEWED,
+			JSON.stringify([...new Set([...previewedPaths(), ...paths])]),
+		);
+}
+
+const groupCounts = () => {
+	const counts = new Map();
+	for (const item of registry.workspaces)
+		counts.set(item.group, (counts.get(item.group) ?? 0) + 1);
+	return counts;
+};
+
+function openRegister(groupName = "") {
+	selectTab($("#tab-workspaces"));
+	const panel = $("#register-panel");
+	panel.open = true;
+	// Suggest the group only; never replace what the user already typed.
+	const field = $("#register").elements.group;
+	if (groupName && !field.value) field.value = groupName;
+	panel.scrollIntoView({ block: "nearest", behavior: "smooth" });
+	$("#browse").focus();
+}
+
+const steps = [
+	{
+		title: "Add a workspace",
+		body: "Pick the folder of a clone or worktree. Clonelane reads its repository and remote for you.",
+		action: "Add workspace",
+		done: () => registry.workspaces.length > 0,
+		run: () => openRegister(),
+	},
+	{
+		title: "Add another clone of the same repository",
+		body: "Put it in the same group. Sync and .env sharing work between the workspaces of one group.",
+		action: "Add another",
+		done: () => [...groupCounts().values()].some((count) => count > 1),
+		// The group that still has a single clone is the one waiting for its second.
+		run: () =>
+			openRegister(
+				[...groupCounts()].find(([, count]) => count === 1)?.[0] ?? "",
+			),
+	},
+	{
+		title: "Fetch, then preview a sync",
+		body: "Fetch remote downloads each base branch; Reload local only re-reads this computer. Preview shows what Apply would change and changes nothing itself.",
+		action: "Fetch and preview",
+		done: () => {
+			const previewed = previewedPaths();
+			return registry.workspaces.some((item) => previewed.includes(item.path));
+		},
+		run: async () => {
+			// A failed fetch stays on screen; previewing stale refs would hide it.
+			if (!(await fetchRemote())) return;
+			selectTab($("#tab-sync"));
+			await previewSync();
+			$("#tab-sync").focus();
+		},
+	},
+];
+
+function check() {
+	const icon = svg("svg", {
+		class: "check",
+		viewBox: "0 0 16 16",
+		"aria-hidden": "true",
+	});
+	icon.append(svg("path", { d: "M3.5 8.5l3 3 6-7" }));
+	return icon;
+}
+
+// Completion per step as last drawn; null means the list must be drawn from scratch.
+let drawn = null;
+function renderGuide() {
+	const shown = loaded && guideShown();
+	$("#guide").hidden = !shown;
+	$("#guide-toggle").ariaExpanded = String(shown);
+	if (!shown) {
+		drawn = null;
+		return;
+	}
+	const states = steps.map((step) => step.done());
+	const current = states.indexOf(false);
+	$("#guide-progress").textContent =
+		`${states.filter(Boolean).length} of ${steps.length} done`;
+	$("#guide-done").hidden = current !== -1;
+	// Redraw only when completion changes, so the check animation is not restarted.
+	if (drawn && states.every((done, index) => done === drawn[index])) return;
+	const before = drawn;
+	drawn = states;
+	const focused = $("#guide-steps").contains(document.activeElement);
+	$("#guide-steps").replaceChildren(
+		...steps.map((step, index) => {
+			const done = states[index];
+			// Only the next step offers its action: later steps need the earlier ones.
+			const action =
+				index === current
+					? el("button", { type: "button", className: "primary" }, step.action)
+					: null;
+			action?.addEventListener("click", step.run);
+			return el(
+				"li",
+				{
+					className: [
+						done ? "done" : "",
+						index === current ? "current" : "",
+						// Animate only a step that was open a moment ago, not on first draw.
+						done && before?.[index] === false ? "just-done" : "",
+					]
+						.filter(Boolean)
+						.join(" "),
+				},
+				el(
+					"span",
+					{ className: "marker", ariaHidden: "true" },
+					el("span", { className: "number" }, String(index + 1)),
+					check(),
+				),
+				el(
+					"div",
+					{ className: "step-text" },
+					el(
+						"p",
+						{ className: "step-title" },
+						step.title,
+						done
+							? el("span", { className: "visually-hidden" }, " (done)")
+							: null,
+					),
+					done ? null : el("p", { className: "step-body" }, step.body),
+				),
+				action,
+			);
+		}),
+	);
+	// Keyboard users keep their place when the list they were in is redrawn.
+	if (focused) ($("#guide-steps button") ?? $("#guide-title")).focus();
+}
+
+$("#guide-hide").addEventListener("click", () => {
+	remember(GUIDE, "hidden");
+	render();
+	$("#guide-toggle").focus();
+});
+$("#guide-toggle").addEventListener("click", () => {
+	// Before the registry is read, a click would override the first-run decision.
+	if (!loaded) return;
+	remember(GUIDE, guideShown() ? "hidden" : "shown");
+	selectTab($("#tab-workspaces"));
+	render();
+	if (guideShown()) $("#guide-title").scrollIntoView({ block: "nearest" });
 });
 
 refresh();

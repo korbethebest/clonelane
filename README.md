@@ -128,7 +128,7 @@ pnpm app
 pnpm app --config=/path/to/registry.json
 ```
 
-An Electron window over the same core: workspace overview with every local branch and a commit graph, register (folder picker), rename / regroup / remove (registry only; folders are never touched), **Reload local** (re-read Git state on disk, no network), **Fetch remote** (download the base branch), sync preview → apply, and env plan → apply. It uses the CLI's registry by default and follows the same rules: **Apply** is enabled only after a preview with identical options, applying sync fetches first, and env screens show key names and states only. Errors are sanitized like the CLI.
+An Electron window over the same core: a first-run guide (reopen it from **Guide**), workspace overview with every local branch and a commit graph, register (folder picker), rename / regroup / remove (registry only; folders are never touched), **Reload local** (re-read Git state on disk, no network), **Fetch remote** (download the base branch), sync preview → apply, and env plan → apply. It uses the CLI's registry by default and follows the same rules: **Apply** is enabled only after a preview with identical options, applying sync fetches first, and env screens show key names and states only. Errors are sanitized like the CLI.
 
 The interface is English only. Sync reasons from the core are shown through `app/labels.js`; `tests/labels.spec.ts` fails when the core adds a reason without a label.
 

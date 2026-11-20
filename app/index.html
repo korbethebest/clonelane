@@ -21,6 +21,15 @@
 				Group
 				<select id="group"></select>
 			</label>
+			<button
+				id="guide-toggle"
+				type="button"
+				class="quiet"
+				aria-controls="guide"
+				aria-expanded="false"
+			>
+				Guide
+			</button>
 			<button id="refresh" type="button" title="Re-read branches and changes on this computer. No network.">
 				Reload local
 			</button>
@@ -66,6 +75,22 @@
 			</div>
 
 			<section id="workspaces" role="tabpanel" aria-labelledby="tab-workspaces">
+				<section id="guide" class="guide" aria-labelledby="guide-title" hidden>
+					<div class="guide-head">
+						<h2 id="guide-title" tabindex="-1">Get started</h2>
+						<span id="guide-progress" class="guide-progress" aria-live="polite"></span>
+						<button id="guide-hide" type="button" class="link">Hide guide</button>
+					</div>
+					<p class="guide-lede">
+						Clonelane keeps every clone of a repository in step. It never pushes, and it backs up
+						every branch it moves.
+					</p>
+					<ol id="guide-steps" class="steps"></ol>
+					<p id="guide-done" class="guide-done" hidden>
+						You're set. Open this guide again from Guide in the header.
+					</p>
+				</section>
+
 				<div id="workspace-list"></div>
 
 				<details id="register-panel">
