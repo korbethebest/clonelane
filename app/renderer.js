@@ -220,7 +220,11 @@ function outcome(item, applied) {
 		: ["fast-forward", "rebase"].includes(item.action) ||
 			item.baseUpdate?.action === "fast-forward";
 	if (changes) return applied ? "updated" : "update";
-	if (item.action === "skip" && item.reason !== "rebase-not-enabled")
+	// A lease is someone else's work in progress, left alone on purpose: nothing to fix.
+	if (
+		item.action === "skip" &&
+		!["rebase-not-enabled", "leased"].includes(item.reason)
+	)
 		return "blocked";
 	return "none";
 }
@@ -363,6 +367,7 @@ function fillTargets() {
 				{ className: "target-row", dataset: { name } },
 				el("label", { className: "inline" }, box, name),
 				el("label", { className: "inline keep" }, "Keep local", keep),
+				el("span", { className: "lease-note" }),
 			);
 		}),
 	);
@@ -376,6 +381,7 @@ function fillTargets() {
 			? `No other workspace is in group "${source.group}". Keys are only copied within one group: register another clone of this repository in "${source.group}", or change a group with Edit on the Workspaces tab.`
 			: "";
 	note.hidden = !note.textContent;
+	showLeaseNotes();
 }
 
 function render() {
@@ -385,9 +391,13 @@ function render() {
 		(node) => node.dataset.key,
 	);
 	// Read fields directly: FormData skips them while the UI is locked (disabled).
-	const draft = [...($("#edit-form")?.elements ?? [])]
+	const open = $("#edit-form, #lease-form");
+	const draft = [...(open?.elements ?? [])]
 		.filter((field) => field.name)
 		.map((field) => [field.name, field.value]);
+	const typing = open?.contains(document.activeElement)
+		? document.activeElement.name
+		: null;
 	list.ariaBusy = String(Boolean(view.loading));
 	if (loaded && registry.workspaces.length === 0)
 		// The guide carries the first-run message when it is open.
@@ -425,14 +435,19 @@ function render() {
 	else list.replaceChildren(...(view.statuses ?? []).map(renderWorkspace));
 	for (const node of list.querySelectorAll("details[data-key]"))
 		if (opened.includes(node.dataset.key)) node.open = true;
-	const form = $("#edit-form");
-	if (form)
+	const form = open && $(`#${open.id}`);
+	if (form) {
 		for (const [key, value] of draft)
 			if (form.elements[key]) form.elements[key].value = value;
+		if (typing) form.elements[typing]?.focus();
+	}
 	$("#sync-result").replaceChildren(
 		...(view.sync ? renderSync(view.sync) : []),
 	);
-	if (view.env && view.env.key !== envKey()) view.env = null;
+	showLeaseNotes();
+	// A background refresh (a lease taken or lapsed) stales a preview, not a written report.
+	if (view.env && !view.env.applied && view.env.key !== envKey())
+		view.env = null;
 	$("#env-result").replaceChildren(
 		...(view.env ? renderEnvResult(view.env) : []),
 	);
@@ -484,10 +499,39 @@ async function refresh() {
 	render();
 }
 
+const clock = new Intl.DateTimeFormat("en", {
+	hour: "2-digit",
+	minute: "2-digit",
+});
+const dayClock = new Intl.DateTimeFormat("en", {
+	month: "short",
+	day: "numeric",
+	hour: "2-digit",
+	minute: "2-digit",
+});
+// "until 15:30" today, "until Nov 21, 09:00" later.
+function untilText(iso) {
+	const at = new Date(iso);
+	if (Number.isNaN(at.getTime()) || at.getFullYear() > 9999) return "";
+	const today = at.toDateString() === new Date().toDateString();
+	return `until ${(today ? clock : dayClock).format(at)}`;
+}
+const leaseText = (lease) =>
+	lease.holder === "?"
+		? "Unreadable lease file: Release… clears it"
+		: [
+				`In use by ${lease.holder}`,
+				lease.note && `(${lease.note})`,
+				untilText(lease.until),
+			]
+				.filter(Boolean)
+				.join(" ");
+
 function workspaceStatus(state) {
 	if (state.error) return [[state.error, "warn"]];
 	const ref = baseRef(state.workspace);
 	const items = [];
+	if (state.lease) items.push([leaseText(state.lease), "lease"]);
 	if (state.operation) items.push(["Git operation in progress", "warn"]);
 	if (state.dirty) items.push(["Uncommitted changes", "warn"]);
 	if (state.interrupted > 0)
@@ -532,6 +576,31 @@ function renderWorkspace(state) {
 				"span",
 				{ className: "card-tools" },
 				showGroup && el("span", { className: "group-tag" }, workspace.group),
+				state.lease &&
+					el(
+						"button",
+						{
+							type: "button",
+							className: "small",
+							ariaLabel: `Release the lease on ${workspace.name}`,
+							onclick: () => releaseWorkspace(workspace, state.lease),
+						},
+						"Release…",
+					),
+				!state.error &&
+					!state.lease &&
+					el(
+						"button",
+						{
+							type: "button",
+							className: "small",
+							ariaLabel: `Lease ${workspace.name}`,
+							dataset: { lease: workspace.name },
+							ariaExpanded: String(leasing === workspace.name),
+							onclick: () => toggleLease(workspace.name),
+						},
+						"Lease…",
+					),
 				el(
 					"button",
 					{
@@ -547,6 +616,7 @@ function renderWorkspace(state) {
 			),
 		),
 		editing === workspace.name && editForm(workspace),
+		leasing === workspace.name && !state.lease && leaseForm(workspace),
 		!state.error &&
 			el(
 				"p",
@@ -736,6 +806,134 @@ async function restoreMove(workspace, operation) {
 	else say(`Restored ${branch} in ${workspace.name} to ${short(result.to)}.`);
 }
 
+// Taking a lease: who, why (optional) and for how long. The holder is remembered.
+let leasing = null;
+const HOLDER_KEY = "clonelane.holder:v1";
+const savedHolder = () => {
+	try {
+		return localStorage.getItem(HOLDER_KEY) || "me";
+	} catch {
+		return "me";
+	}
+};
+
+function toggleLease(name) {
+	leasing = leasing === name ? null : name;
+	// The next form starts fresh, not with the closing one's draft.
+	$("#edit-form, #lease-form")?.remove();
+	editing = null;
+	render();
+	if (leasing) $("#lease-form [name=note]")?.focus();
+	else $(`[data-lease="${CSS.escape(name)}"]`)?.focus();
+}
+
+const durations = [
+	[60, "1 hour"],
+	[120, "2 hours"],
+	[240, "4 hours"],
+	[480, "8 hours"],
+	[1440, "1 day"],
+];
+
+function leaseForm(workspace) {
+	return el(
+		"form",
+		{ id: "lease-form", className: "edit grid", onsubmit: takeWorkspace },
+		el(
+			"label",
+			{},
+			"Holder",
+			el("input", {
+				name: "holder",
+				value: savedHolder(),
+				required: true,
+				maxLength: 64,
+				pattern: "[A-Za-z0-9][A-Za-z0-9._@\\-]*",
+				title: "Letters, digits, dots, underscores, @ and hyphens.",
+			}),
+		),
+		el(
+			"label",
+			{},
+			"For",
+			el(
+				"select",
+				{ name: "minutes" },
+				durations.map(([minutes, text]) =>
+					el("option", { value: minutes, selected: minutes === 120 }, text),
+				),
+			),
+		),
+		el(
+			"label",
+			{ className: "wide" },
+			"Note",
+			el("input", {
+				name: "note",
+				maxLength: 200,
+				placeholder: "Optional, e.g. feat/login",
+			}),
+		),
+		el(
+			"div",
+			{ className: "actions wide" },
+			el("button", { type: "submit", className: "primary" }, "Lease"),
+			el(
+				"button",
+				{ type: "button", onclick: () => toggleLease(workspace.name) },
+				"Cancel",
+			),
+		),
+		el("p", {
+			id: "lease-error",
+			className: "alert wide",
+			role: "alert",
+			hidden: true,
+		}),
+	);
+}
+
+async function takeWorkspace(event) {
+	event.preventDefault();
+	const name = leasing;
+	const input = Object.fromEntries(new FormData(event.currentTarget));
+	const lease = await call(
+		"takeLease",
+		{ name, ...input },
+		{ busy: "Leasing…", alert: "lease-error" },
+	);
+	if (!lease) return;
+	try {
+		localStorage.setItem(HOLDER_KEY, lease.holder);
+	} catch {}
+	leasing = null;
+	await refresh();
+	say(
+		`Leased ${name} to ${lease.holder}. Sync, env and restore skip it until it is released.`,
+	);
+}
+
+async function releaseWorkspace(workspace, lease) {
+	if (
+		!confirm(
+			lease.holder === "?"
+				? `Clear the unreadable lease file on ${workspace.name}? Sync and env will no longer skip it.`
+				: `Release ${lease.holder}'s lease on ${workspace.name}? Sync and env will no longer skip it, even if ${lease.holder} is still working there.`,
+		)
+	)
+		return;
+	// Only the lease the dialog named: if someone else took it meanwhile, this is refused.
+	if (
+		!(await call("releaseLease", {
+			name: workspace.name,
+			holder: lease.holder,
+		}))
+	)
+		return;
+	await refresh();
+	say(`Released the lease on ${workspace.name}.`);
+}
+
 // Read on first open; a refresh rebuilds the card, so the next open reads again.
 async function loadGraph(details, state) {
 	if (!details.open || details.dataset.loaded) return;
@@ -897,6 +1095,9 @@ let editing = null;
 
 function toggleEdit(name) {
 	editing = editing === name ? null : name;
+	// The next form starts fresh, not with the closing one's draft.
+	$("#edit-form, #lease-form")?.remove();
+	leasing = null;
 	render();
 	if (editing) $("#edit-form [name=newName]")?.focus();
 	else focusEdit(name);
@@ -1188,11 +1389,29 @@ function envInput() {
 	return input;
 }
 // A preview stands for the form and the group as registered when it was made.
+const leaseOf = (name) =>
+	view.statuses?.find((state) => state.workspace?.name === name)?.lease;
+// A preview stands for the form, the group and its leases as they were when it was made:
+// a lease taken, released or lapsed since makes it stale.
 const envKey = () =>
 	JSON.stringify([
 		envInput(),
-		registry.workspaces.map((item) => [item.name, item.group]),
+		registry.workspaces.map((item) => [
+			item.name,
+			item.group,
+			leaseOf(item.name)?.holder ?? null,
+		]),
 	]);
+
+// Targets someone has leased say so; their preview row explains that they are skipped.
+function showLeaseNotes() {
+	for (const row of $("#target-list").children) {
+		const lease = leaseOf(row.dataset.name);
+		row.querySelector(".lease-note").textContent = lease
+			? leaseText(lease)
+			: "";
+	}
+}
 
 function applyScope() {
 	const form = $("#env-form");
@@ -1271,7 +1490,8 @@ function renderEnvResult(shown) {
 	const changes = plans.flatMap((item) => item.plan.changes);
 	const risk = riskText(changes);
 	const writes = changes.filter(writing).length;
-	const failed = results.length - plans.length;
+	const leased = results.filter((item) => item.error === "LEASED").length;
+	const failed = results.length - plans.length - leased;
 	// Cards re-render often (auto-fetch, reloads): the tick lives in the view, not the DOM.
 	const overwrite = el("input", {
 		type: "checkbox",
@@ -1280,22 +1500,26 @@ function renderEnvResult(shown) {
 	const apply = el(
 		"button",
 		{ type: "button", className: "primary" },
-		results.length > 1 ? `Apply to ${results.length} workspaces` : "Apply",
+		results.length - leased > 1
+			? `Apply to ${results.length - leased} workspaces`
+			: "Apply",
 	);
 	const reason = el("span", { className: "reason" });
 	const gateApply = () => {
 		const text =
-			writes === 0
-				? results.length > 1
-					? "Nothing to write. Every target already matches."
-					: "Nothing to write. The target already matches."
-				: risk && !overwrite.checked
-					? risk
-					: null;
+			results.length === leased
+				? "Every target is leased, so nothing will be written."
+				: writes === 0
+					? results.length - leased > 1
+						? "Nothing to write. Every target already matches."
+						: "Nothing to write. The target already matches."
+					: risk && !overwrite.checked
+						? risk
+						: null;
 		apply.disabled = text != null;
 		reason.textContent =
 			text ??
-			`Writes ${plural(writes, "key")}${results.length > 1 ? `, one workspace at a time` : ""}.${failed ? ` ${plural(failed, "workspace")} failed in the preview and will be tried again.` : ""}`;
+			`Writes ${plural(writes, "key")}${results.length - leased > 1 ? `, one workspace at a time` : ""}.${failed ? ` ${plural(failed, "workspace")} failed in the preview and will be tried again.` : ""}${leased ? ` ${plural(leased, "leased workspace")} will be skipped.` : ""}`;
 	};
 	overwrite.addEventListener("change", () => {
 		shown.overwrite = overwrite.checked;
@@ -1313,7 +1537,15 @@ function renderEnvResult(shown) {
 		...results.flatMap((item) =>
 			item.plan
 				? renderEnv(item.plan, applied)
-				: [el("p", { className: "error" }, `${item.target}: ${item.message}`)],
+				: item.error === "LEASED"
+					? [leasedRow(item.target)]
+					: [
+							el(
+								"p",
+								{ className: "error" },
+								`${item.target}: ${item.message}`,
+							),
+						],
 		),
 		!applied &&
 			el(
@@ -1332,6 +1564,18 @@ function renderEnvResult(shown) {
 	].filter(Boolean);
 }
 
+// A leased target is skipped on purpose, not broken: say who has it and how to include it.
+function leasedRow(name) {
+	const lease = view.statuses?.find(
+		(state) => state.workspace?.name === name,
+	)?.lease;
+	return el(
+		"p",
+		{ className: "lease-skip" },
+		`${name}: ${lease ? leaseText(lease) : "In use"}, so it is skipped. Release its lease on the Workspaces tab to include it.`,
+	);
+}
+
 async function previewEnv() {
 	const key = envKey();
 	const input = envInput();
@@ -1345,7 +1589,8 @@ async function previewEnv() {
 }
 
 async function applyEnvForm(shown) {
-	const count = shown.results.length;
+	// Leased targets are skipped, so they are not among the workspaces written.
+	const count = shown.results.filter((item) => item.error !== "LEASED").length;
 	const changes = shown.results.flatMap((item) => item.plan?.changes ?? []);
 	const removed = changes.filter((change) => change.state === "remove").length;
 	const replaced = changes.filter(
@@ -1370,11 +1615,20 @@ async function applyEnvForm(shown) {
 	if (!results) return;
 	view.env = { ...shown, results, applied: true };
 	render();
-	const failed = results.filter((item) => item.error).length;
+	const leased = results.filter((item) => item.error === "LEASED").length;
+	const failed = results.filter(
+		(item) => item.error && item.error !== "LEASED",
+	).length;
+	const wrote = results.length - failed - leased;
 	say(
-		failed
-			? `Wrote ${results.length - failed} of ${plural(results.length, "workspace")}; see the errors above.`
-			: `Wrote ${plural(results.length, "workspace")}.`,
+		[
+			failed
+				? `Wrote ${wrote} of ${plural(wrote + failed, "workspace")}; see the errors above.`
+				: `Wrote ${plural(wrote, "workspace")}.`,
+			leased && `Skipped ${plural(leased, "leased workspace")}.`,
+		]
+			.filter(Boolean)
+			.join(" "),
 	);
 }
 
