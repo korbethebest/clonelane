@@ -9,7 +9,6 @@ All notable changes to this project are documented here. The format follows [Kee
 - `clonelane claim`: leases a free workspace in a group (no lease, nothing uncommitted, no Git operation) for a holder and prints its path, so parallel agents each get a checkout of their own. A holder's existing lease is renewed instead of taking a second workspace.
 - `clonelane here` prints the workspace the current folder is in, with its lease; `lease take` and `lease release` without a workspace name use it.
 - `CLONELANE_HOLDER` sets the default `--holder` and `--as`.
-
 - `clonelane agent install [--claude] [--agents] [--project]` installs a Clonelane Agent Skill for Claude Code (`.claude/skills`) and for Codex, Gemini CLI and other tools that read `.agents/skills`.
 - **Renew** on a leased card in the desktop app adds two hours as the same holder.
 - Library: `claimWorkspace()` and `workspaceAt()`.
