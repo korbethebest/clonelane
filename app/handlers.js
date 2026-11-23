@@ -216,9 +216,10 @@ export function createHandlers(config, { statusCache } = {}) {
 				from: String(from ?? ""),
 				to: String(to ?? ""),
 			}),
-		branchDelete: async ({ name, branch, dryRun }) =>
+		branchDelete: async ({ name, branch, dryRun, remote }) =>
 			deleteBranch(await named(name), String(branch ?? ""), {
 				dryRun: dryRun === true,
+				remote: remote === true,
 			}),
 		autoSync: ({ group, on }) =>
 			setAutoSync(config, String(group ?? ""), on === true),

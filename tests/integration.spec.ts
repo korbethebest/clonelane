@@ -903,6 +903,26 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 			(await deleteBranch(f.a, "from-remote", { dryRun: true })).unique,
 			0,
 		);
+		// A published branch can go on the remote too; a branch without one cannot.
+		assert.equal(
+			(await deleteBranch(f.a, "from-remote", { dryRun: true })).remote,
+			undefined,
+		);
+		await run(f.first, ["branch", "pub", "master"]);
+		await run(f.first, ["push", "-u", "origin", "pub"]);
+		const both = await deleteBranch(f.a, "pub", { dryRun: true });
+		assert.deepEqual(both.remote, { branch: "origin/pub", unique: 0 });
+		const gone = await deleteBranch(f.a, "pub", { remote: true });
+		assert.equal(gone.remote?.deleted, true);
+		await assert.rejects(
+			run(f.remote, ["rev-parse", "--verify", "refs/heads/pub"]),
+		);
+		// The base branch on the remote is never offered.
+		assert.equal(
+			(await deleteBranch(f.a, "master", { dryRun: true }).catch(() => null))
+				?.remote,
+			undefined,
+		);
 		// Someone else's lease keeps branch work out.
 		await takeLease(f.a, { holder: "agent-1" });
 		await assert.rejects(switchBranch(f.a, "from-remote"), { code: "LEASED" });

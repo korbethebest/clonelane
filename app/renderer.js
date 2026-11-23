@@ -1077,15 +1077,22 @@ async function removeBranch(workspace, branch) {
 		)
 	)
 		return;
+	// A second, separate question: deleting on the remote affects everyone who uses it.
+	const remote =
+		plan.remote &&
+		confirm(
+			`Also delete ${plan.remote.branch} on the remote? Anyone else using it loses it too.${plan.remote.unique > 0 ? ` ${plural(plan.remote.unique, "commit")} would then be on no branch or tag; the tips are kept as local backups.` : ""}\n\nOK deletes both. Cancel deletes only the local branch.`,
+		);
 	const deleted = await call(
 		"branchDelete",
-		{ name: workspace.name, branch },
-		{ busy: "Deleting…" },
+		{ name: workspace.name, branch, remote: remote === true },
+		{ busy: remote ? "Deleting here and on the remote…" : "Deleting…" },
 	);
 	if (!deleted) return;
 	await refresh();
+	const back = deleted.remote?.deleted ? deleted.remote : deleted;
 	say(
-		`Deleted ${branch} from ${workspace.name}.${deleted.unique > 0 ? ` To bring it back: git branch ${branch} ${deleted.backup}` : ""}`,
+		`Deleted ${branch} from ${workspace.name}${deleted.remote?.deleted ? ` and ${deleted.remote.branch}` : ""}.${back.unique > 0 ? ` To bring it back: git branch ${branch} ${back.backup}` : ""}`,
 	);
 }
 

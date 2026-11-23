@@ -182,6 +182,38 @@ export interface DeleteResult {
 	result: "planned" | "deleted";
 	/** Where the tip is kept; recreate the branch with `git branch <name> <backup>`. */
 	backup?: string;
+	/**
+	 * The same-named branch on the workspace's remote that this branch tracks, when there
+	 * is one; `unique` counts what deleting both would leave on no branch or tag.
+	 */
+	remote?: {
+		branch: string;
+		unique: number;
+		deleted?: boolean;
+		backup?: string;
+	};
+}
+
+// Only a same-named upstream on a named remote, never the base: deleting it is a push.
+async function upstreamOf(workspace: Workspace, name: string) {
+	const [tracking = "", remote = "", remoteRef = ""] = (
+		await git(workspace.path, [
+			"for-each-ref",
+			"--format=%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref)",
+			`refs/heads/${name}`,
+		])
+	).split("\0");
+	const short = `${remote}/${name}`;
+	if (
+		!remote ||
+		remoteRef !== `refs/heads/${name}` ||
+		tracking !== `refs/remotes/${short}` ||
+		(remote === workspace.remote && name === workspace.base) ||
+		!(await exists(workspace.path, tracking))
+	)
+		return undefined;
+	const tip = await git(workspace.path, ["rev-parse", "--verify", tracking]);
+	return { remote, remoteRef, tracking, short, tip };
 }
 
 /**
@@ -192,7 +224,7 @@ export interface DeleteResult {
 export async function deleteBranch(
 	workspace: Workspace,
 	name: string,
-	options: Options & { dryRun?: boolean } = {},
+	options: Options & { dryRun?: boolean; remote?: boolean } = {},
 ): Promise<DeleteResult> {
 	const run = async (state: WorkspaceStatus): Promise<DeleteResult> => {
 		const path = workspace.path;
@@ -227,15 +259,67 @@ export async function deleteBranch(
 				"--",
 			]),
 		);
-		if (options.dryRun) return { branch: name, tip, unique, result: "planned" };
+		const upstream = await upstreamOf(workspace, name);
+		const remote = upstream && {
+			branch: upstream.short,
+			unique: Number(
+				await git(path, [
+					"rev-list",
+					"--count",
+					ref,
+					upstream.tracking,
+					"--not",
+					// Each --exclude applies only to the next --branches or --remotes.
+					`--exclude=${name}`,
+					"--branches",
+					`--exclude=${upstream.short}`,
+					"--remotes",
+					"--tags",
+					"--",
+				]),
+			),
+		};
+		if (options.dryRun)
+			return { branch: name, tip, unique, result: "planned", remote };
+		if (options.remote && !upstream)
+			fail(
+				"BRANCH_NO_REMOTE",
+				`"${name}" does not track a branch of the same name on a remote.`,
+			);
 		const backup = `refs/clonelane/backups/${randomUUID()}`;
 		await git(path, ["update-ref", backup, tip]);
+		let remoteResult: DeleteResult["remote"];
+		if (options.remote && upstream && remote) {
+			// Remote first: if the remote refuses, nothing local has changed yet.
+			const remoteBackup =
+				upstream.tip === tip
+					? backup
+					: `refs/clonelane/backups/${randomUUID()}`;
+			if (remoteBackup !== backup)
+				await git(path, ["update-ref", remoteBackup, upstream.tip]);
+			// Only if the remote still holds the tip last fetched: never someone's newer push.
+			await git(path, [
+				"push",
+				`--force-with-lease=${upstream.remoteRef}:${upstream.tip}`,
+				"--",
+				upstream.remote,
+				`:${upstream.remoteRef}`,
+			]);
+			remoteResult = { ...remote, deleted: true, backup: remoteBackup };
+		}
 		// Only the tip that was backed up: a commit made meanwhile fails this instead.
 		await git(path, ["update-ref", "-d", ref, tip]);
 		await git(path, ["config", "--remove-section", `branch.${name}`]).catch(
 			() => {},
 		);
-		return { branch: name, tip, unique, result: "deleted", backup };
+		return {
+			branch: name,
+			tip,
+			unique,
+			result: "deleted",
+			backup,
+			remote: remoteResult ?? remote,
+		};
 	};
 	if (options.dryRun) {
 		const state = await inspectWorkspace(workspace);
