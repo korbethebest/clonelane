@@ -15,6 +15,7 @@ import {
 	takeLease,
 	workspaceLease,
 } from "./lease.ts";
+import { serveMcp } from "./mcp.ts";
 import {
 	addWorkspace,
 	readRegistry,
@@ -23,7 +24,7 @@ import {
 	selectWorkspaces,
 	workspaceAt,
 } from "./registry.ts";
-import { listOperations, restoreOperation } from "./restore.ts";
+import { listOperations, operationOwner, restoreOperation } from "./restore.ts";
 import { fetchWorkspaces, syncWorkspaces } from "./sync.ts";
 import { inspectWorkspace } from "./workspaces.ts";
 
@@ -48,6 +49,7 @@ const help = `Clonelane — keep your Git workspaces in the same lane.
   clonelane claim [--group <group>] --holder <name> [--note "why"] [--minutes 120]
   clonelane here
   clonelane agent install [--claude] [--agents] [--project]
+  clonelane mcp
 
 Global: --config <file> (default: ~/.config/clonelane/registry.json), --help
 --as <holder> on sync, restore and env: act as that lease holder.
@@ -59,6 +61,8 @@ here prints the workspace the current folder is in, with its lease.
 agent install writes the Clonelane skill for coding agents: --claude to ~/.claude/skills,
 --agents to ~/.agents/skills (Codex, Gemini CLI and others); both by default. --project
 writes them under the current folder instead.
+mcp serves the same actions to MCP clients over stdio; sync, env_sync and restore preview
+unless called with dry_run false.
 
 status and sync --dry-run use cached remote refs and do not fetch.
 sync fetches the selected base before updating. No command pushes.
@@ -156,6 +160,7 @@ async function main(): Promise<void> {
 		claim: ["group", "holder", "note", "minutes"],
 		here: [],
 		agent: ["claude", "agents", "project"],
+		mcp: [],
 	};
 	// A lease holder may act on its own leased workspaces; profiles store no holder.
 	if (
@@ -196,6 +201,11 @@ async function main(): Promise<void> {
 			? DEFAULT_MINUTES
 			: Number(values.minutes);
 	};
+	if (command === "mcp") {
+		if (positionals.length !== 1) fail("USAGE", "mcp takes no arguments.");
+		await serveMcp(config);
+		return;
+	}
 	if (command === "agent") {
 		if (argument !== "install" || positionals.length !== 2)
 			fail("USAGE", "Use clonelane agent install.");
@@ -339,18 +349,15 @@ async function main(): Promise<void> {
 		if (positionals.length !== 1) fail("USAGE", "claim takes no arguments.");
 		if (!holder)
 			fail("USAGE", "claim requires --holder (or CLONELANE_HOLDER).");
+		// The folder's own workspace is the natural pick, and its group the default.
+		const here = await workspaceAt(registry, process.cwd()).catch(() => null);
 		const group =
 			values.group ??
-			(
-				await workspaceAt(registry, process.cwd()).catch(() =>
-					fail(
-						"USAGE",
-						"claim requires --group outside a registered workspace.",
-					),
-				)
-			).group;
+			here?.group ??
+			fail("USAGE", "claim requires --group outside a registered workspace.");
 		const claimed = await claimWorkspace(selectWorkspaces(registry, group), {
 			holder,
+			prefer: here?.name,
 			note: values.note,
 			minutes: minutes(),
 		});
@@ -419,29 +426,10 @@ async function main(): Promise<void> {
 				"restore requires one operation id from clonelane history.",
 			);
 		const id = argument as string;
-		// The journal is per clone, so find the workspace that recorded this id.
-		const owners: (typeof registry.workspaces)[number][] = [];
-		let unreadable: unknown;
-		for (const workspace of selectWorkspaces(registry, values.group)) {
-			const operations = await listOperations(workspace).catch((error) => {
-				unreadable ??= error;
-				return [];
-			});
-			if (operations.some((item) => item.id === id)) owners.push(workspace);
-		}
-		if (owners.length > 1)
-			fail(
-				"AMBIGUOUS",
-				`Operation ${id} exists in several workspaces. Narrow it with --group.`,
-			);
-		const owner = owners[0];
-		// The id may be in a workspace that could not be read: say why instead of "not found".
-		if (!owner && unreadable) throw unreadable;
-		if (!owner)
-			fail(
-				"NOT_FOUND",
-				`No recorded operation ${id}. Run "clonelane history" to list them.`,
-			);
+		const owner = await operationOwner(
+			selectWorkspaces(registry, values.group),
+			id,
+		);
 		const result = await restoreOperation(owner, id, {
 			dryRun: values["dry-run"],
 			as,

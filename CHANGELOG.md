@@ -12,10 +12,12 @@ All notable changes to this project are documented here. The format follows [Kee
 - `clonelane agent install [--claude] [--agents] [--project]` installs a Clonelane Agent Skill for Claude Code (`.claude/skills`) and for Codex, Gemini CLI and other tools that read `.agents/skills`.
 - **Renew** on a leased card in the desktop app adds two hours as the same holder.
 - Library: `claimWorkspace()` and `workspaceAt()`.
+- `clonelane mcp`: an MCP server over stdio (no new dependencies) with `here`, `status`, `claim`, `lease_take`, `lease_release`, `lease_list`, `fetch`, `sync`, `env_profiles`, `env_sync`, `history` and `restore`. Changing tools preview unless called with `dry_run: false`. Checked with Claude Code and Codex.
 
 ### Changed
 
 - Renewing a lease never shortens it: the later of its current end and the new one is kept.
+- `claim` tries the current folder's workspace first when it is free.
 
 ## [0.5.0] - 2026-11-23
 

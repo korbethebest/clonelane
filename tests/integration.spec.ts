@@ -643,6 +643,127 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		assert.match(skill, /^---\nname: clonelane\ndescription: /);
 	});
 
+	test("the MCP server answers over stdio: tools list, here, claim, previews and errors", async (t) => {
+		const f = await fixture(t);
+		const config = join(f.root, "registry.json");
+		await addWorkspace(config, { name: "first", path: f.first, group: "demo" });
+		await addWorkspace(config, {
+			name: "second",
+			path: f.second,
+			group: "demo",
+		});
+		const before = await run(f.first, ["rev-parse", "HEAD"]);
+		await f.publish();
+		await fetchWorkspaces((await readRegistry(config)).workspaces);
+		const requests = [
+			{
+				jsonrpc: "2.0",
+				id: 1,
+				method: "initialize",
+				params: {
+					protocolVersion: "2025-06-18",
+					capabilities: {},
+					clientInfo: { name: "test", version: "0" },
+				},
+			},
+			{ jsonrpc: "2.0", method: "notifications/initialized" },
+			{ jsonrpc: "2.0", id: 2, method: "tools/list" },
+			{
+				jsonrpc: "2.0",
+				id: 3,
+				method: "tools/call",
+				params: { name: "here", arguments: {} },
+			},
+			{
+				jsonrpc: "2.0",
+				id: 4,
+				method: "tools/call",
+				params: { name: "claim", arguments: { note: "mcp" } },
+			},
+			{
+				jsonrpc: "2.0",
+				id: 5,
+				method: "tools/call",
+				params: { name: "sync", arguments: {} },
+			},
+			{
+				jsonrpc: "2.0",
+				id: 6,
+				method: "tools/call",
+				params: {
+					name: "lease_take",
+					arguments: { workspace: "first", holder: "bad name" },
+				},
+			},
+			{
+				jsonrpc: "2.0",
+				id: 7,
+				method: "tools/call",
+				params: { name: "sync", arguments: { force: true } },
+			},
+			{
+				jsonrpc: "2.0",
+				id: 8,
+				method: "tools/call",
+				params: { name: "nope", arguments: {} },
+			},
+			{ jsonrpc: "2.0", id: 9, method: "nope" },
+		];
+		const child = execFile(
+			process.execPath,
+			[resolve("src/cli.ts"), "mcp", "--config", config],
+			{
+				cwd: f.second,
+				encoding: "utf8",
+				env: { ...process.env, CLONELANE_HOLDER: "claude-1" },
+			},
+		);
+		const output = new Promise<string>((done, failed) => {
+			let out = "";
+			child.stdout?.on("data", (chunk) => {
+				out += chunk;
+			});
+			child.on("error", failed);
+			child.on("close", () => done(out));
+		});
+		child.stdin?.end(
+			`${requests.map((item) => JSON.stringify(item)).join("\n")}\nnot json\n`,
+		);
+		const lines = (await output)
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line));
+		// Every line on stdout is a JSON-RPC response; the notification got none.
+		assert.equal(lines.length, 10);
+		const by = new Map(lines.map((line) => [line.id, line]));
+		assert.equal(by.get(1).result.protocolVersion, "2025-06-18");
+		assert.equal(by.get(1).result.serverInfo.name, "clonelane");
+		const names = by
+			.get(2)
+			.result.tools.map((tool: { name: string }) => tool.name);
+		assert.ok(
+			["here", "claim", "sync", "env_sync", "lease_release"].every((name) =>
+				names.includes(name),
+			),
+		);
+		const body = (id: number) => JSON.parse(by.get(id).result.content[0].text);
+		assert.equal(body(3).name, "second");
+		// Holder from CLONELANE_HOLDER; group from the server's folder.
+		assert.equal(body(4).holder, "claude-1");
+		// The server's own workspace is free, so claim picks it over the first one listed.
+		assert.equal(body(4).workspace, "second");
+		assert.equal(body(4).note, "mcp");
+		// sync previews by default: nothing moved, and nothing was fetched.
+		assert.ok(Array.isArray(body(5)));
+		assert.equal(await run(f.first, ["rev-parse", "HEAD"]), before);
+		assert.equal(by.get(6).result.isError, true);
+		assert.equal(body(6).error, "LEASE_HOLDER");
+		assert.equal(body(7).error, "INVALID_ARGUMENT");
+		assert.equal(by.get(8).error.code, -32602);
+		assert.equal(by.get(9).error.code, -32601);
+		assert.equal(by.get(null).error.code, -32700);
+	});
+
 	test("dry run does not fetch or create recovery refs; explicit fetch then fast-forward updates master", async (t) => {
 		const f = await fixture(t);
 		const before = await run(f.first, ["rev-parse", "HEAD"]);

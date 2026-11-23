@@ -108,9 +108,29 @@ clonelane here                     # which workspace this folder is, and its lea
 clonelane lease release            # done: give back the one this folder is in
 ```
 
-- `claim` picks a workspace in the group (by default the current folder's) with no lease, nothing uncommitted, no Git operation and no interrupted update, and leases it. A holder that already has one gets it back, renewed, so a retried claim never takes two. Concurrent claims are settled under the clone's lock. `NO_FREE_WORKSPACE` means every one is busy.
+- `claim` picks a workspace in the group (by default the current folder's, and that folder's own workspace first when it is free) with no lease, nothing uncommitted, no Git operation and no interrupted update, and leases it. A holder that already has one gets it back, renewed, so a retried claim never takes two. Concurrent claims are settled under the clone's lock. `NO_FREE_WORKSPACE` means every one is busy.
 - `lease take` and `lease release` without a workspace name use the one the current folder is in.
 - The skill (`skills/clonelane/SKILL.md` in the package) tells an agent to lease before working, to stay out of checkouts others hold, to preview before syncing, and to ask before overwriting `.env` keys. Run `agent install` again after upgrading; it replaces the installed copy and keeps an edited one beside it as `SKILL.md.bak`.
+### MCP server
+
+`clonelane mcp` serves the same actions to any MCP client over stdio, so an agent can call them as tools instead of running commands: `here`, `status`, `claim`, `lease_take`, `lease_release`, `lease_list`, `fetch`, `sync`, `env_profiles`, `env_sync`, `history` and `restore`.
+
+```sh
+claude mcp add clonelane -e CLONELANE_HOLDER=claude -- clonelane mcp      # Claude Code
+codex mcp add clonelane --env CLONELANE_HOLDER=codex -- clonelane mcp     # Codex
+```
+
+Gemini CLI and other clients take the same command in their settings, for example `.gemini/settings.json`:
+
+```json
+{ "mcpServers": { "clonelane": { "command": "clonelane", "args": ["mcp"], "env": { "CLONELANE_HOLDER": "gemini" } } } }
+```
+
+- On Windows, a globally installed `clonelane` is a `.cmd` file: use `cmd /c clonelane mcp` as the command if the client cannot start it directly.
+- `sync`, `env_sync` and `restore` preview unless called with `dry_run: false`; `env_sync` changes or removes existing keys only with `overwrite: true`. There is no forced lease release.
+- Workspace tools take a `workspace` name or a `path` inside one, and default to the folder the client started the server in. `holder` and `as` default to the server's `CLONELANE_HOLDER`.
+- The registry is read on every call. Errors come back as tool results with `{ "error", "message" }`, never raw Git or file output, and `.env` values are never returned.
+
 - `CLONELANE_HOLDER` must be a valid holder name, or every command refuses to run. Like any holder name, it is not authenticated: it keeps cooperating agents apart, it does not stop one that ignores it.
 
 ## Share `.env` keys

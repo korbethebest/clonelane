@@ -7,6 +7,8 @@ description: Coordinate work across several local clones or worktrees of one Git
 
 Clonelane keeps several clones and worktrees of one repository in step: it shows their state, fast-forwards them to their base branch, copies `.env` keys between them, and lets one agent or person lease a checkout so the others leave it alone. It never pushes, never stashes and never resets.
 
+If the `clonelane` MCP tools are available (`here`, `claim`, `lease_take`, `lease_release`, `status`, `sync`, `env_sync`, ...), you may call them instead of the commands below; they take the same options, and the changing ones preview unless you pass `dry_run: false`.
+
 Every command prints JSON. On failure it prints `{"error": CODE, "message": ...}` to stderr and exits with 1; read the code and the message, and do not retry blindly.
 
 ## Who you are

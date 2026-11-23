@@ -37,6 +37,38 @@ export async function listOperations(
 }
 
 /**
+ * The workspace whose journal recorded operation `id` (journals are per clone).
+ * An id found in several is ambiguous; one in an unreadable workspace says why.
+ */
+export async function operationOwner(
+	workspaces: Workspace[],
+	id: string,
+): Promise<Workspace> {
+	const owners: Workspace[] = [];
+	let unreadable: unknown;
+	for (const workspace of workspaces) {
+		const operations = await listOperations(workspace).catch((error) => {
+			unreadable ??= error;
+			return [];
+		});
+		if (operations.some((item) => item.id === id)) owners.push(workspace);
+	}
+	if (owners.length > 1)
+		fail(
+			"AMBIGUOUS",
+			`Operation ${id} exists in several workspaces. Narrow it with a group.`,
+		);
+	const owner = owners[0];
+	if (!owner && unreadable) throw unreadable;
+	if (!owner)
+		fail(
+			"NOT_FOUND",
+			`No recorded operation ${id}. Run "clonelane history" to list them.`,
+		);
+	return owner;
+}
+
+/**
  * Moves a branch back to the commit a recorded operation backed up. It only does so when
  * the branch is still exactly where that operation left it, the workspace has no
  * uncommitted work or Git operation in progress, and the backup ref is intact. The current

@@ -152,16 +152,19 @@ export async function workspaceLease(
  * uncommitted, no Git operation and no interrupted update. A workspace the holder already
  * has is renewed and returned instead, so a retried claim never takes a second one. Two
  * claims racing for the same workspace are settled by takeLease's lock: the loser moves on.
+ * `prefer` (a workspace name, such as the one the caller is in) is tried first when free.
  */
 export async function claimWorkspace(
 	workspaces: Workspace[],
-	input: { holder: string; note?: string; minutes?: number },
+	input: { holder: string; note?: string; minutes?: number; prefer?: string },
 ): Promise<{ workspace: Workspace; lease: Lease; renewed: boolean }> {
 	checkHolder(input.holder);
+	const ordered = [
+		...workspaces.filter((item) => item.name === input.prefer),
+		...workspaces.filter((item) => item.name !== input.prefer),
+	];
 	const states = await Promise.all(
-		workspaces.map((workspace) =>
-			inspectWorkspace(workspace).catch(() => null),
-		),
+		ordered.map((workspace) => inspectWorkspace(workspace).catch(() => null)),
 	);
 	const own = states.find((state) => state?.lease?.holder === input.holder);
 	if (own)
