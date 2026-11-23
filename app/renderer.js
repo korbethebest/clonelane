@@ -1090,9 +1090,14 @@ async function removeBranch(workspace, branch) {
 	);
 	if (!deleted) return;
 	await refresh();
-	const back = deleted.remote?.deleted ? deleted.remote : deleted;
+	// The local tip is the branch as it was; a remote tip that differed is named too.
+	const gone = deleted.remote?.deleted ? deleted.remote : undefined;
+	const other =
+		gone && gone.backup !== deleted.backup
+			? ` ${gone.branch} was at ${gone.backup}.`
+			: "";
 	say(
-		`Deleted ${branch} from ${workspace.name}${deleted.remote?.deleted ? ` and ${deleted.remote.branch}` : ""}.${back.unique > 0 ? ` To bring it back: git branch ${branch} ${back.backup}` : ""}`,
+		`Deleted ${branch} from ${workspace.name}${gone ? ` and ${gone.branch}` : ""}.${deleted.unique > 0 || gone?.unique > 0 ? ` To bring it back: git branch ${branch} ${deleted.backup}.${other}` : ""}`,
 	);
 }
 

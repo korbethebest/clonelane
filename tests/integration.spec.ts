@@ -917,6 +917,23 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		await assert.rejects(
 			run(f.remote, ["rev-parse", "--verify", "refs/heads/pub"]),
 		);
+		// A remote branch that moved since the last fetch is refused, and nothing changes.
+		await run(f.first, ["branch", "moved", "master"]);
+		await run(f.first, ["push", "-u", "origin", "moved"]);
+		await run(f.seed, ["fetch", "origin"]);
+		await run(f.seed, ["switch", "-c", "moved", "origin/moved"]);
+		await writeFile(join(f.seed, "moved.txt"), "newer\n");
+		await run(f.seed, ["add", "."]);
+		await run(f.seed, ["commit", "-m", "newer"]);
+		await run(f.seed, ["push", "origin", "moved"]);
+		await assert.rejects(deleteBranch(f.a, "moved", { remote: true }), {
+			code: "GIT_PUSH_REJECTED",
+		});
+		await run(f.first, ["rev-parse", "--verify", "refs/heads/moved"]);
+		await run(f.remote, ["rev-parse", "--verify", "refs/heads/moved"]);
+		await assert.rejects(renameBranch(f.a, { from: "moved", to: "master" }), {
+			code: "BRANCH_BASE",
+		});
 		// The base branch on the remote is never offered.
 		assert.equal(
 			(await deleteBranch(f.a, "master", { dryRun: true }).catch(() => null))

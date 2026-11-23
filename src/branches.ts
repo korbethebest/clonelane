@@ -156,10 +156,10 @@ export async function renameBranch(
 		const path = workspace.path;
 		const ref = await mustExist(path, await checkName(path, input.from));
 		const to = await checkName(path, input.to);
-		if (input.from === workspace.base)
+		if (input.from === workspace.base || to === workspace.base)
 			fail(
 				"BRANCH_BASE",
-				`"${input.from}" is this workspace's base branch; Clonelane syncs it by that name.`,
+				`"${workspace.base}" is this workspace's base branch; Clonelane syncs it by that name.`,
 			);
 		if (to === input.from) return { from: input.from, to };
 		if (await exists(path, `refs/heads/${to}`))
@@ -304,11 +304,26 @@ export async function deleteBranch(
 				"--",
 				upstream.remote,
 				`:${upstream.remoteRef}`,
-			]);
+			]).catch((error) =>
+				// Auth and network failures keep their own codes; anything else is a refusal.
+				(error as { code?: string }).code === "GIT_FAILED"
+					? fail(
+							"GIT_PUSH_REJECTED",
+							`The remote refused to delete ${upstream.short}: it moved since the last fetch, or it is protected. Fetch remote and check it. The local branch was kept.`,
+						)
+					: Promise.reject(error),
+			);
 			remoteResult = { ...remote, deleted: true, backup: remoteBackup };
 		}
 		// Only the tip that was backed up: a commit made meanwhile fails this instead.
-		await git(path, ["update-ref", "-d", ref, tip]);
+		await git(path, ["update-ref", "-d", ref, tip]).catch((error) =>
+			remoteResult
+				? fail(
+						"BRANCH_MOVED",
+						`${upstream?.short} was deleted on the remote (its tip is kept at ${remoteResult.backup}), but "${name}" changed meanwhile, so it was kept.`,
+					)
+				: Promise.reject(error),
+		);
 		await git(path, ["config", "--remove-section", `branch.${name}`]).catch(
 			() => {},
 		);

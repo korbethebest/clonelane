@@ -172,11 +172,6 @@ const failures: [RegExp, string, string][] = [
 		"Another Git process is working in this repository (a .lock file exists). Wait for it to finish, or remove the stale lock file.",
 	],
 	[
-		/\[(remote )?rejected\]|stale info/i,
-		"GIT_PUSH_REJECTED",
-		"The remote refused the change: the branch moved there or is protected. Fetch remote and check it.",
-	],
-	[
 		/not a git repository/i,
 		"GIT_NOT_REPO",
 		"This folder is not a Git repository any more.",
