@@ -17,7 +17,7 @@ import { delimiter, dirname, join, relative, resolve, sep } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { describe, type TestContext, test } from "node:test";
 import { parseEnv, promisify } from "node:util";
-import { findEditor } from "../src/editor.ts";
+import { findEditor, openInEditor } from "../src/editor.ts";
 import {
 	describeGitFailure,
 	findGit,
@@ -1082,6 +1082,21 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		await writeFile(program, "");
 		assert.equal(findEditor({ CLONELANE_EDITOR: program }), program);
 		assert.equal(findEditor({ PATH: "" }), undefined);
+		// A program that cannot start is reported, not announced as opened.
+		await assert.rejects(
+			openInEditor(
+				{
+					name: "a",
+					path: f.first,
+					group: "demo",
+					repository: "",
+					remote: "origin",
+					base: "master",
+				},
+				{ CLONELANE_EDITOR: program },
+			),
+			{ code: "EDITOR" },
+		);
 	});
 
 	test("dry run does not fetch or create recovery refs; explicit fetch then fast-forward updates master", async (t) => {

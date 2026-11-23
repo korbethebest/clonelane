@@ -260,7 +260,10 @@ export async function runTui(
 		screen.selected = Math.max(0, screen.selected - 1);
 	};
 	const down = () => {
-		screen.selected = Math.min(screen.rows.length - 1, screen.selected + 1);
+		screen.selected = Math.min(
+			Math.max(0, screen.rows.length - 1),
+			screen.selected + 1,
+		);
 	};
 	const actions: Record<string, () => Promise<void> | void> = {
 		up,
@@ -317,7 +320,7 @@ export async function runTui(
 			run("Opening…", async () => {
 				const row = screen.rows[screen.selected];
 				if (!row) return "No workspace selected.";
-				return `Opened ${row.workspace.name} in ${openInEditor(row.workspace)}.`;
+				return `Opened ${row.workspace.name} in ${await openInEditor(row.workspace)}.`;
 			}),
 	};
 
@@ -338,17 +341,20 @@ export async function runTui(
 				_: string,
 				key: { name?: string; ctrl?: boolean },
 			) => {
+				// Nothing, not even quitting, while Git is working: leaving now would let a
+				// running sync finish unseen, or exit the process in the middle of it.
+				if (screen.busy) return;
 				if (key?.name === "q" || (key?.ctrl && key.name === "c")) {
 					input.off("keypress", onKey);
 					resolve();
 					return;
 				}
-				if (screen.busy) return;
 				const pending = confirm;
 				confirm = undefined;
 				if (pending) {
 					if (key?.name === "y") await pending();
 					else {
+						screen.panel = undefined;
 						screen.message = "Cancelled.";
 						draw();
 					}

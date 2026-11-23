@@ -363,7 +363,7 @@ async function main(): Promise<void> {
 				"USAGE",
 				"open takes one registered workspace name, or none inside a workspace.",
 			);
-		print({ workspace: workspace.name, editor: openInEditor(workspace) });
+		print({ workspace: workspace.name, editor: await openInEditor(workspace) });
 		return;
 	}
 	if (command === "tui") {
