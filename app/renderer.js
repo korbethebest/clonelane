@@ -391,9 +391,13 @@ function render() {
 		(node) => node.dataset.key,
 	);
 	// Read fields directly: FormData skips them while the UI is locked (disabled).
-	const draft = [...($("#edit-form")?.elements ?? [])]
+	const open = $("#edit-form, #lease-form");
+	const draft = [...(open?.elements ?? [])]
 		.filter((field) => field.name)
 		.map((field) => [field.name, field.value]);
+	const typing = open?.contains(document.activeElement)
+		? document.activeElement.name
+		: null;
 	list.ariaBusy = String(Boolean(view.loading));
 	if (loaded && registry.workspaces.length === 0)
 		// The guide carries the first-run message when it is open.
@@ -431,15 +435,19 @@ function render() {
 	else list.replaceChildren(...(view.statuses ?? []).map(renderWorkspace));
 	for (const node of list.querySelectorAll("details[data-key]"))
 		if (opened.includes(node.dataset.key)) node.open = true;
-	const form = $("#edit-form");
-	if (form)
+	const form = open && $(`#${open.id}`);
+	if (form) {
 		for (const [key, value] of draft)
 			if (form.elements[key]) form.elements[key].value = value;
+		if (typing) form.elements[typing]?.focus();
+	}
 	$("#sync-result").replaceChildren(
 		...(view.sync ? renderSync(view.sync) : []),
 	);
 	showLeaseNotes();
-	if (view.env && view.env.key !== envKey()) view.env = null;
+	// A background refresh (a lease taken or lapsed) stales a preview, not a written report.
+	if (view.env && !view.env.applied && view.env.key !== envKey())
+		view.env = null;
 	$("#env-result").replaceChildren(
 		...(view.env ? renderEnvResult(view.env) : []),
 	);
@@ -509,13 +517,15 @@ function untilText(iso) {
 	return `until ${(today ? clock : dayClock).format(at)}`;
 }
 const leaseText = (lease) =>
-	[
-		`In use by ${lease.holder}`,
-		lease.note && `(${lease.note})`,
-		untilText(lease.until),
-	]
-		.filter(Boolean)
-		.join(" ");
+	lease.holder === "?"
+		? "Unreadable lease file: Release… clears it"
+		: [
+				`In use by ${lease.holder}`,
+				lease.note && `(${lease.note})`,
+				untilText(lease.until),
+			]
+				.filter(Boolean)
+				.join(" ");
 
 function workspaceStatus(state) {
 	if (state.error) return [[state.error, "warn"]];
@@ -809,6 +819,8 @@ const savedHolder = () => {
 
 function toggleLease(name) {
 	leasing = leasing === name ? null : name;
+	// The next form starts fresh, not with the closing one's draft.
+	$("#edit-form, #lease-form")?.remove();
 	editing = null;
 	render();
 	if (leasing) $("#lease-form [name=note]")?.focus();
@@ -904,7 +916,9 @@ async function takeWorkspace(event) {
 async function releaseWorkspace(workspace, lease) {
 	if (
 		!confirm(
-			`Release ${lease.holder}'s lease on ${workspace.name}? Sync and env will no longer skip it, even if ${lease.holder} is still working there.`,
+			lease.holder === "?"
+				? `Clear the unreadable lease file on ${workspace.name}? Sync and env will no longer skip it.`
+				: `Release ${lease.holder}'s lease on ${workspace.name}? Sync and env will no longer skip it, even if ${lease.holder} is still working there.`,
 		)
 	)
 		return;
@@ -1081,6 +1095,8 @@ let editing = null;
 
 function toggleEdit(name) {
 	editing = editing === name ? null : name;
+	// The next form starts fresh, not with the closing one's draft.
+	$("#edit-form, #lease-form")?.remove();
 	leasing = null;
 	render();
 	if (editing) $("#edit-form [name=newName]")?.focus();
