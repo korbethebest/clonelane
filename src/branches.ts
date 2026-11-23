@@ -93,7 +93,7 @@ export async function switchBranch(
 		if (await elsewhere(state, ref))
 			fail(
 				"BRANCH_CHECKED_OUT",
-				`"${name}" is checked out in another worktree. Switch there, or pick another branch.`,
+				`"${name}" is checked out in another worktree, or a rebase or bisect is using it. Switch there, or pick another branch.`,
 			);
 		await git(path, ["switch", "--no-guess", "--quiet", name]);
 		return { branch: name, switched: true };
@@ -167,7 +167,7 @@ export async function renameBranch(
 		if (await busyElsewhere(state.commonDir, ref))
 			fail(
 				"BRANCH_CHECKED_OUT",
-				`"${input.from}" is being rebased or bisected in another worktree.`,
+				`"${input.from}" is in use by a rebase or bisect. Finish or abort it first.`,
 			);
 		await git(path, ["branch", "-m", input.from, to]);
 		return { from: input.from, to };
@@ -177,7 +177,7 @@ export async function renameBranch(
 export interface DeleteResult {
 	branch: string;
 	tip: string;
-	/** Commits on no other local or remote-tracking branch: what deleting would hide. */
+	/** Commits on no other branch, remote-tracking branch or tag: what deleting would hide. */
 	unique: number;
 	result: "planned" | "deleted";
 	/** Where the tip is kept; recreate the branch with `git branch <name> <backup>`. */
@@ -210,7 +210,7 @@ export async function deleteBranch(
 		if (await elsewhere(state, ref))
 			fail(
 				"BRANCH_CHECKED_OUT",
-				`"${name}" is checked out in another worktree.`,
+				`"${name}" is checked out in another worktree, or a rebase or bisect is using it.`,
 			);
 		const tip = await git(path, ["rev-parse", "--verify", ref]);
 		const unique = Number(
@@ -223,6 +223,7 @@ export async function deleteBranch(
 				`--exclude=${name}`,
 				"--branches",
 				"--remotes",
+				"--tags",
 				"--",
 			]),
 		);

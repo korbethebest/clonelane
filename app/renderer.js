@@ -729,7 +729,13 @@ function renderWorkspace(state) {
 					plural(state.branches.length, "local branch", "local branches"),
 				),
 				table(
-					["Branch", "Upstream", "Ahead", "Behind", ""],
+					[
+						"Branch",
+						"Upstream",
+						"Ahead",
+						"Behind",
+						el("span", { className: "visually-hidden" }, "Actions"),
+					],
 					state.branches.map((branch) => [
 						[
 							pill("local", branch.name, { current: branch.current }),
@@ -1066,8 +1072,8 @@ async function removeBranch(workspace, branch) {
 	if (
 		!confirm(
 			plan.unique > 0
-				? `Delete ${branch}? ${plural(plan.unique, "commit")} on it ${plan.unique > 1 ? "are" : "is"} on no other branch. Its tip is kept as a backup, so it can be recovered.`
-				: `Delete ${branch}? Every commit on it is also on another branch.`,
+				? `Delete ${branch}? ${plural(plan.unique, "commit")} on it ${plan.unique > 1 ? "are" : "is"} on no other branch or tag. Its tip is kept as a backup, so it can be recovered.`
+				: `Delete ${branch}? Every commit on it is also on another branch or tag.`,
 		)
 	)
 		return;
@@ -1079,7 +1085,7 @@ async function removeBranch(workspace, branch) {
 	if (!deleted) return;
 	await refresh();
 	say(
-		`Deleted ${branch} from ${workspace.name}.${plan.unique > 0 ? ` To bring it back: git branch ${branch} ${deleted.backup}` : ""}`,
+		`Deleted ${branch} from ${workspace.name}.${deleted.unique > 0 ? ` To bring it back: git branch ${branch} ${deleted.backup}` : ""}`,
 	);
 }
 
