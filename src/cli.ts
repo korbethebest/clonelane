@@ -72,7 +72,8 @@ worker do it: worker every --every minutes (5 to 1440), or one pass with --once.
 
 status and sync --dry-run use cached remote refs and do not fetch.
 sync fetches the selected base before updating. No command pushes.
---rebase applies only to the current, unpublished, linear feature branch.
+--rebase applies only to the current, unpublished, linear feature branch, and moves local
+branches stacked under it along with it (stack in the result); each is backed up.
 history lists the branch moves Clonelane made, with their backups. restore moves a
 branch back to a backup only if it has not moved since; --dry-run shows the plan.
 env output shows key names and states only. Applying normalizes comments/formatting.
