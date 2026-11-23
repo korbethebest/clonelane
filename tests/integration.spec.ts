@@ -40,7 +40,9 @@ import {
 	removeProfile,
 	removeWorkspace,
 	restoreOperation,
+	runAutoSync,
 	saveProfile,
+	setAutoSync,
 	syncEnvProfile,
 	syncWorkspaces,
 	takeLease,
@@ -764,6 +766,72 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		assert.equal(by.get(8).error.code, -32602);
 		assert.equal(by.get(9).error.code, -32601);
 		assert.equal(by.get(null).error.code, -32700);
+	});
+
+	test("automatic sync: a group turned on is fetched and fast-forwarded by the worker, leases and changes respected", async (t) => {
+		const f = await fixture(t);
+		const config = join(f.root, "registry.json");
+		await addWorkspace(config, { name: "first", path: f.first, group: "demo" });
+		await addWorkspace(config, {
+			name: "second",
+			path: f.second,
+			group: "demo",
+		});
+		await assert.rejects(setAutoSync(config, "nope", true), { code: "EMPTY" });
+		const cli = (args: string[]) =>
+			exec(
+				process.execPath,
+				[resolve("src/cli.ts"), ...args, "--config", config],
+				{
+					cwd: f.root,
+					encoding: "utf8",
+					env: { ...process.env, CLONELANE_HOLDER: "" },
+				},
+			);
+		// Nothing on yet: one pass says so and fails.
+		await assert.rejects(cli(["worker", "--once"]), /EMPTY/);
+		const on = JSON.parse((await cli(["auto-sync", "on", "demo"])).stdout);
+		assert.deepEqual(on.autoSync, ["demo"]);
+		assert.equal(on.preview.length, 2);
+		assert.deepEqual(JSON.parse((await cli(["auto-sync", "list"])).stdout), [
+			"demo",
+		]);
+		const head = await f.publish();
+		// second is leased by someone: the pass updates first only, and leaves second alone.
+		const registry = await readRegistry(config);
+		await takeLease(registry.workspaces[1] as typeof f.a, {
+			holder: "agent-1",
+		});
+		const before = await run(f.second, ["rev-parse", "HEAD"]);
+		const lines = (await cli(["worker", "--once"])).stdout
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line));
+		assert.equal(lines.length, 1);
+		assert.equal(lines[0].group, "demo");
+		assert.deepEqual(
+			lines[0].results.map((item: { name: string; result: string }) => [
+				item.name,
+				item.result,
+			]),
+			[
+				["first", "updated"],
+				["second", "skipped"],
+			],
+		);
+		assert.equal(await run(f.first, ["rev-parse", "HEAD"]), head);
+		assert.equal(await run(f.second, ["rev-parse", "HEAD"]), before);
+		// The library pass skips groups that are off, and turning off clears the setting.
+		assert.deepEqual(
+			await runAutoSync(await readRegistry(config), ["other"]),
+			[],
+		);
+		assert.deepEqual(
+			JSON.parse((await cli(["auto-sync", "off", "demo"])).stdout).autoSync,
+			[],
+		);
+		assert.equal((await readRegistry(config)).autoSync, undefined);
+		await assert.rejects(cli(["worker", "--every", "1"]), /USAGE/);
 	});
 
 	test("dry run does not fetch or create recovery refs; explicit fetch then fast-forward updates master", async (t) => {

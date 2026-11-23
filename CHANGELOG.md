@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- Automatic sync: `clonelane auto-sync on|off <group>` and `auto-sync list` keep a group up to date without being asked; turning one on prints what a sync would do now. `clonelane worker [--every 15] [--once]` fetches and fast-forwards those groups by the usual sync rules, never rebasing, and skips dirty, busy and leased workspaces.
+- The desktop app's Sync tab has **Keep up to date automatically** per group (with a preview before it turns on); while Auto-fetch is on, each automatic fetch also fast-forwards those groups.
+- Library: `setAutoSync()`, `runAutoSync()`.
+
 ## [0.6.0] - 2026-11-23
 
 ### Added

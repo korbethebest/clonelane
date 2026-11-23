@@ -22,6 +22,7 @@ import {
 	restoreOperation,
 	saveProfile,
 	selectWorkspaces,
+	setAutoSync,
 	syncEnvProfile,
 	syncWorkspaces,
 	takeLease,
@@ -189,13 +190,16 @@ export function createHandlers(config, { statusCache } = {}) {
 			return String(input.name);
 		},
 		fetch: async ({ group }) => fetchWorkspaces(await pick(group)),
-		sync: async ({ group, dryRun, rebase }) =>
-			// Same contract as the CLI: a real sync fetches first, a preview never does.
+		sync: async ({ group, dryRun, rebase, fetched }) =>
+			// Same contract as the CLI: a real sync fetches first, a preview never does. The
+			// automatic fetch passes fetched: it has just fetched these remotes.
 			syncWorkspaces(await pick(group), {
 				dryRun: dryRun === true,
 				rebase: rebase === true,
-				fetch: dryRun !== true,
+				fetch: dryRun !== true && fetched !== true,
 			}),
+		autoSync: ({ group, on }) =>
+			setAutoSync(config, String(group ?? ""), on === true),
 		// Saves the form as the whole profile: its targets and their kept keys replace the
 		// saved ones (an unticked target's kept keys are dropped).
 		profileSave: (input) => saveProfile(config, profileFrom(input)),

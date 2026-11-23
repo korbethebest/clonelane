@@ -313,6 +313,60 @@ function renderRegistry() {
 		if (shared) source.value = shared.name;
 	}
 	fillTargets();
+	renderAutoSync(groups);
+}
+
+// One switch per group: keep it up to date without being asked (fast-forward only).
+function renderAutoSync(groups) {
+	$("#auto-sync").hidden = groups.length === 0;
+	const on = registry.autoSync ?? [];
+	$("#auto-sync-list").replaceChildren(
+		...groups.map((name) =>
+			el(
+				"label",
+				{ className: "inline" },
+				el("input", {
+					type: "checkbox",
+					checked: on.includes(name),
+					onchange: (event) => toggleAutoSync(name, event.currentTarget),
+				}),
+				groups.length > 1 ? name : `Group ${name}`,
+			),
+		),
+	);
+}
+
+// Turning it on is reviewed first: what a sync of that group would do right now.
+async function toggleAutoSync(name, box) {
+	if (box.checked) {
+		const plan = await call("sync", { group: name, dryRun: true });
+		if (!plan) {
+			box.checked = false;
+			return;
+		}
+		const moves = plan
+			.filter((item) => outcome(item, false) === "update")
+			.map((item) => item.name);
+		if (
+			!confirm(
+				`Keep ${name} up to date automatically? While the app is open with Auto-fetch on (or clonelane worker runs), its workspaces are fetched and fast-forwarded every 15 minutes. Nothing is rebased; workspaces with changes, a lease or a Git operation are skipped. ${moves.length ? `Right now it would update ${moves.join(", ")}.` : "Right now nothing needs updating."}`,
+			)
+		) {
+			box.checked = false;
+			return;
+		}
+	}
+	const groups = await call("autoSync", { group: name, on: box.checked });
+	if (!groups) {
+		box.checked = !box.checked;
+		return;
+	}
+	registry.autoSync = groups;
+	say(
+		box.checked
+			? `${name} is kept up to date automatically.`
+			: `Automatic sync is off for ${name}.`,
+	);
 }
 
 // Keys are only copied within one group, so "To" only offers the source's group.
@@ -2134,15 +2188,27 @@ async function autoFetch() {
 		const fetched = await window.clonelane
 			.call("fetch", { group: scope })
 			.catch(failure);
+		// Groups kept up to date: fast-forward them from what was just fetched.
+		const synced = [];
+		for (const name of registry.autoSync ?? []) {
+			if (scope && scope !== name) continue;
+			const result = await window.clonelane
+				.call("sync", { group: name, fetched: true })
+				.catch(failure);
+			if (result.ok) synced.push(...result.data);
+		}
 		// Read status inside the same wait, so no action can see it half-updated.
 		const statuses = await window.clonelane
 			.call("status", { group: scope })
 			.catch(failure);
-		return { fetched, statuses };
+		return { fetched, synced, statuses };
 	})().finally(() => {
 		backgroundFetch = null;
 	});
-	const { fetched, statuses } = await backgroundFetch;
+	const { fetched, synced, statuses } = await backgroundFetch;
+	const updated = synced
+		.filter((item) => outcome(item, true) === "updated")
+		.map((item) => item.name);
 	const current = group() === scope;
 	if (current && statuses.ok) view.statuses = statuses.data;
 	const moved = readable().filter(
@@ -2156,7 +2222,7 @@ async function autoFetch() {
 	const anyFetched =
 		fetched.ok && fetched.data.some((item) => item.result === "fetched");
 	if (
-		(comparable ? moved.length > 0 : anyFetched) &&
+		(updated.length > 0 || (comparable ? moved.length > 0 : anyFetched)) &&
 		view.sync &&
 		!view.sync.applied
 	) {
@@ -2174,6 +2240,8 @@ async function autoFetch() {
 	// An action that waited for this fetch owns the status bar now.
 	if (pending > 0 || !current) return;
 	if (problem && problem !== lastFailure) say(problem);
+	else if (updated.length)
+		say(`Synced automatically: updated ${updated.join(", ")}.`);
 	else if (comparable && moved.length)
 		say(
 			`Fetched automatically: new commits on ${[...new Set(moved.map((state) => baseRef(state.workspace)))].join(", ")}.`,

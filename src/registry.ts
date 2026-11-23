@@ -30,6 +30,11 @@ export interface Registry {
 	version: 1;
 	workspaces: Workspace[];
 	profiles?: EnvProfile[];
+	/**
+	 * Groups kept up to date without being asked: fetched and fast-forwarded by the
+	 * desktop app's automatic fetch and by `clonelane worker`. Never rebased.
+	 */
+	autoSync?: string[];
 }
 
 const strings = (value: unknown) =>
@@ -84,6 +89,8 @@ export async function readRegistry(path: string): Promise<Registry> {
 		)
 	)
 		fail("CONFIG", "Invalid env profile entry.");
+	if (data.autoSync !== undefined && !strings(data.autoSync))
+		fail("CONFIG", "Invalid autoSync entry.");
 	return data;
 }
 
@@ -349,4 +356,27 @@ export async function workspaceAt(
 			"This folder is not inside a registered workspace. Name one, or run clonelane status to list them.",
 		);
 	return match;
+}
+
+/**
+ * Turns automatic sync on or off for a group. Only groups that have workspaces can be
+ * turned on; turning one off that is not on is a no-op. Returns the groups now on.
+ */
+export async function setAutoSync(
+	path: string,
+	group: string,
+	on: boolean,
+): Promise<string[]> {
+	let groups: string[] = [];
+	await edit(path, (registry) => {
+		const current = registry.autoSync ?? [];
+		if (on && !registry.workspaces.some((item) => item.group === group))
+			fail("EMPTY", `No registered workspaces are in group "${group}".`);
+		groups = on
+			? [...new Set([...current, group])]
+			: current.filter((item) => item !== group);
+		if (groups.length) registry.autoSync = groups;
+		else delete registry.autoSync;
+	});
+	return groups;
 }

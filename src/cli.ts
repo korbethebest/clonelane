@@ -22,10 +22,11 @@ import {
 	removeProfile,
 	saveProfile,
 	selectWorkspaces,
+	setAutoSync,
 	workspaceAt,
 } from "./registry.ts";
 import { listOperations, operationOwner, restoreOperation } from "./restore.ts";
-import { fetchWorkspaces, syncWorkspaces } from "./sync.ts";
+import { fetchWorkspaces, runAutoSync, syncWorkspaces } from "./sync.ts";
 import { inspectWorkspace } from "./workspaces.ts";
 
 const help = `Clonelane — keep your Git workspaces in the same lane.
@@ -50,6 +51,8 @@ const help = `Clonelane — keep your Git workspaces in the same lane.
   clonelane here
   clonelane agent install [--claude] [--agents] [--project]
   clonelane mcp
+  clonelane auto-sync on|off <group> | auto-sync list
+  clonelane worker [--every 15] [--once]
 
 Global: --config <file> (default: ~/.config/clonelane/registry.json), --help
 --as <holder> on sync, restore and env: act as that lease holder.
@@ -63,6 +66,9 @@ agent install writes the Clonelane skill for coding agents: --claude to ~/.claud
 writes them under the current folder instead.
 mcp serves the same actions to MCP clients over stdio; sync, env_sync and restore preview
 unless called with dry_run false.
+auto-sync on keeps a group up to date without being asked (fetch, then fast-forward only;
+never rebase), and prints what a sync would do now. The desktop app's automatic fetch and
+worker do it: worker every --every minutes (5 to 1440), or one pass with --once.
 
 status and sync --dry-run use cached remote refs and do not fetch.
 sync fetches the selected base before updating. No command pushes.
@@ -106,6 +112,8 @@ async function main(): Promise<void> {
 			claude: { type: "boolean" },
 			agents: { type: "boolean" },
 			project: { type: "boolean" },
+			every: { type: "string" },
+			once: { type: "boolean" },
 		},
 	});
 	if (values.help || positionals.length === 0) {
@@ -161,6 +169,8 @@ async function main(): Promise<void> {
 		here: [],
 		agent: ["claude", "agents", "project"],
 		mcp: [],
+		"auto-sync": [],
+		worker: ["every", "once"],
 	};
 	// A lease holder may act on its own leased workspaces; profiles store no holder.
 	if (
@@ -368,6 +378,75 @@ async function main(): Promise<void> {
 			...claimed.lease,
 		});
 		return;
+	}
+	if (command === "auto-sync") {
+		if (argument === "list" && positionals.length === 2) {
+			print(registry.autoSync ?? []);
+			return;
+		}
+		const name = positionals[2];
+		if (
+			!["on", "off"].includes(argument ?? "") ||
+			!name ||
+			positionals.length !== 3
+		)
+			fail(
+				"USAGE",
+				"Use auto-sync on <group>, auto-sync off <group> or auto-sync list.",
+			);
+		const autoSync = await setAutoSync(config, name, argument === "on");
+		// Turning it on shows what it would do right now (cached refs, nothing changes).
+		print(
+			argument === "on"
+				? {
+						autoSync,
+						preview: await syncWorkspaces(selectWorkspaces(registry, name), {
+							dryRun: true,
+						}),
+					}
+				: { autoSync },
+		);
+		return;
+	}
+	if (command === "worker") {
+		if (positionals.length !== 1) fail("USAGE", "worker takes no arguments.");
+		if (values.every !== undefined && !/^\d+$/.test(values.every))
+			fail("USAGE", "--every takes a whole number of minutes.");
+		const every = Number(values.every ?? 15);
+		if (every < 5 || every > 1440)
+			fail("USAGE", "--every takes 5 to 1440 minutes.");
+		// The registry is read on every pass, so auto-sync on/off applies without a restart.
+		const pass = async () => {
+			const current = await readRegistry(config);
+			if (!current.autoSync?.length)
+				fail(
+					"EMPTY",
+					"No group has automatic sync on. Turn one on with clonelane auto-sync on <group>.",
+				);
+			const runs = await runAutoSync(current);
+			for (const run of runs)
+				console.log(JSON.stringify({ time: new Date().toISOString(), ...run }));
+			return runs.some((run) =>
+				run.results.some((item) => item.result === "failed"),
+			);
+		};
+		if (values.once) {
+			if (await pass()) process.exitCode = 1;
+			return;
+		}
+		for (;;) {
+			// One bad pass (registry unreadable, nothing on yet) is reported; the next one runs.
+			await pass().catch((error: unknown) =>
+				console.error(
+					JSON.stringify(
+						error instanceof ClonelaneError
+							? { error: error.code, message: error.message }
+							: { error: "FAILED", message: "This pass failed." },
+					),
+				),
+			);
+			await new Promise((done) => setTimeout(done, every * 60_000));
+		}
 	}
 	if (command === "env" && argument === "sync") {
 		if (positionals.length !== 3 || !positionals[2])

@@ -569,3 +569,27 @@ export async function fetchWorkspaces(
 			},
 	);
 }
+
+/**
+ * One unattended pass: for each automatic-sync group (or only `groups`), fetch and
+ * fast-forward as `clonelane sync` would, without rebase. Dirty, leased and busy
+ * workspaces are skipped as always. A group left without workspaces is skipped.
+ */
+export async function runAutoSync(
+	registry: { workspaces: Workspace[]; autoSync?: string[] },
+	groups?: string[],
+): Promise<{ group: string; results: SyncResult[] }[]> {
+	const runs: { group: string; results: SyncResult[] }[] = [];
+	for (const group of registry.autoSync ?? []) {
+		if (groups && !groups.includes(group)) continue;
+		const workspaces = registry.workspaces.filter(
+			(item) => item.group === group,
+		);
+		if (!workspaces.length) continue;
+		runs.push({
+			group,
+			results: await syncWorkspaces(workspaces, { fetch: true }),
+		});
+	}
+	return runs;
+}
