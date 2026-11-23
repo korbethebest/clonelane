@@ -1,6 +1,6 @@
 {
 	"name": "clonelane",
-	"version": "0.6.0",
+	"version": "0.7.0",
 	"description": "Keep your Git workspaces in the same lane.",
 	"type": "module",
 	"license": "MIT",

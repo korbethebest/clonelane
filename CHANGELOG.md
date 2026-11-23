@@ -4,6 +4,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-23
+
 ### Added
 
 - Branch work in the desktop app: each card's branch table has **Switch**, **Rename** and **Delete…** per branch, and **New branch…** (from the current commit, another local branch or the remote base, optionally switching to it). Switching needs a clean workspace (never a stash); a branch made at the current commit keeps uncommitted changes. The base branch cannot be renamed or deleted, nor can the current branch or one checked out in another worktree be deleted; deleting shows how many commits only that branch has and backs its tip up first. A branch that tracks a same-named remote branch can be deleted there too, after a second confirmation; the push is refused if the remote branch moved since the last fetch. All of it respects leases. Library: `switchBranch()`, `createBranch()`, `renameBranch()`, `deleteBranch()`.
@@ -106,7 +108,8 @@ First public release.
 - Git is launched by absolute path from absolute `PATH` entries only, so a `git.exe` in a working tree never runs in place of Git, even when `PATH` contains an empty or relative entry.
 - Credentials in remote URLs, including remote-helper URLs (`<transport>::<address>`), are never stored or printed.
 
-[Unreleased]: https://github.com/korbethebest/clonelane/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/korbethebest/clonelane/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/korbethebest/clonelane/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/korbethebest/clonelane/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/korbethebest/clonelane/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/korbethebest/clonelane/compare/v0.3.0...v0.4.0
