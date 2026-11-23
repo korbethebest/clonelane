@@ -577,6 +577,20 @@ function renderWorkspace(state) {
 						},
 						"Release…",
 					),
+				!state.error &&
+					!state.lease &&
+					el(
+						"button",
+						{
+							type: "button",
+							className: "small",
+							ariaLabel: `Lease ${workspace.name}`,
+							dataset: { lease: workspace.name },
+							ariaExpanded: String(leasing === workspace.name),
+							onclick: () => toggleLease(workspace.name),
+						},
+						"Lease…",
+					),
 				el(
 					"button",
 					{
@@ -592,6 +606,7 @@ function renderWorkspace(state) {
 			),
 		),
 		editing === workspace.name && editForm(workspace),
+		leasing === workspace.name && !state.lease && leaseForm(workspace),
 		!state.error &&
 			el(
 				"p",
@@ -781,6 +796,111 @@ async function restoreMove(workspace, operation) {
 	else say(`Restored ${branch} in ${workspace.name} to ${short(result.to)}.`);
 }
 
+// Taking a lease: who, why (optional) and for how long. The holder is remembered.
+let leasing = null;
+const HOLDER_KEY = "clonelane.holder:v1";
+const savedHolder = () => {
+	try {
+		return localStorage.getItem(HOLDER_KEY) || "me";
+	} catch {
+		return "me";
+	}
+};
+
+function toggleLease(name) {
+	leasing = leasing === name ? null : name;
+	editing = null;
+	render();
+	if (leasing) $("#lease-form [name=note]")?.focus();
+	else $(`[data-lease="${CSS.escape(name)}"]`)?.focus();
+}
+
+const durations = [
+	[60, "1 hour"],
+	[120, "2 hours"],
+	[240, "4 hours"],
+	[480, "8 hours"],
+	[1440, "1 day"],
+];
+
+function leaseForm(workspace) {
+	return el(
+		"form",
+		{ id: "lease-form", className: "edit grid", onsubmit: takeWorkspace },
+		el(
+			"label",
+			{},
+			"Holder",
+			el("input", {
+				name: "holder",
+				value: savedHolder(),
+				required: true,
+				maxLength: 64,
+				pattern: "[A-Za-z0-9][A-Za-z0-9._@\\-]*",
+				title: "Letters, digits, dots, underscores, @ and hyphens.",
+			}),
+		),
+		el(
+			"label",
+			{},
+			"For",
+			el(
+				"select",
+				{ name: "minutes" },
+				durations.map(([minutes, text]) =>
+					el("option", { value: minutes, selected: minutes === 120 }, text),
+				),
+			),
+		),
+		el(
+			"label",
+			{ className: "wide" },
+			"Note",
+			el("input", {
+				name: "note",
+				maxLength: 200,
+				placeholder: "Optional, e.g. feat/login",
+			}),
+		),
+		el(
+			"div",
+			{ className: "actions wide" },
+			el("button", { type: "submit", className: "primary" }, "Lease"),
+			el(
+				"button",
+				{ type: "button", onclick: () => toggleLease(workspace.name) },
+				"Cancel",
+			),
+		),
+		el("p", {
+			id: "lease-error",
+			className: "alert wide",
+			role: "alert",
+			hidden: true,
+		}),
+	);
+}
+
+async function takeWorkspace(event) {
+	event.preventDefault();
+	const name = leasing;
+	const input = Object.fromEntries(new FormData(event.currentTarget));
+	const lease = await call(
+		"takeLease",
+		{ name, ...input },
+		{ busy: "Leasing…", alert: "lease-error" },
+	);
+	if (!lease) return;
+	try {
+		localStorage.setItem(HOLDER_KEY, lease.holder);
+	} catch {}
+	leasing = null;
+	await refresh();
+	say(
+		`Leased ${name} to ${lease.holder}. Sync, env and restore skip it until it is released.`,
+	);
+}
+
 async function releaseWorkspace(workspace, lease) {
 	if (
 		!confirm(
@@ -961,6 +1081,7 @@ let editing = null;
 
 function toggleEdit(name) {
 	editing = editing === name ? null : name;
+	leasing = null;
 	render();
 	if (editing) $("#edit-form [name=newName]")?.focus();
 	else focusEdit(name);

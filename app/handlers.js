@@ -24,6 +24,7 @@ import {
 	selectWorkspaces,
 	syncEnvProfile,
 	syncWorkspaces,
+	takeLease,
 	updateWorkspace,
 } from "../dist/index.js";
 
@@ -198,6 +199,12 @@ export function createHandlers(config, { statusCache } = {}) {
 		// Saves the form as the whole profile: its targets and their kept keys replace the
 		// saved ones (an unticked target's kept keys are dropped).
 		profileSave: (input) => saveProfile(config, profileFrom(input)),
+		takeLease: async ({ name, holder, note, minutes }) =>
+			takeLease(await named(name), {
+				holder: String(holder ?? "").trim(),
+				note: String(note ?? ""),
+				minutes: Number(minutes),
+			}),
 		// Releases only the holder the user confirmed; an unreadable lease ("?") needs force.
 		releaseLease: async ({ name, holder }) =>
 			releaseLease(await named(name), {
