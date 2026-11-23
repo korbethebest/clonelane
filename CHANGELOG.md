@@ -4,6 +4,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-23
+
 ### Added
 
 - `clonelane tui`: a full-screen terminal overview of every workspace (branch, changes, ahead/behind the base, lease) and the selected one's branches, with single keys to reload, fetch, preview and apply a sync (fast-forward only), open in an editor and quit. No new dependencies.
@@ -114,7 +116,8 @@ First public release.
 - Git is launched by absolute path from absolute `PATH` entries only, so a `git.exe` in a working tree never runs in place of Git, even when `PATH` contains an empty or relative entry.
 - Credentials in remote URLs, including remote-helper URLs (`<transport>::<address>`), are never stored or printed.
 
-[Unreleased]: https://github.com/korbethebest/clonelane/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/korbethebest/clonelane/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/korbethebest/clonelane/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/korbethebest/clonelane/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/korbethebest/clonelane/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/korbethebest/clonelane/compare/v0.4.0...v0.5.0
