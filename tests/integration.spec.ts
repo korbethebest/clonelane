@@ -28,6 +28,8 @@ import {
 	addWorkspace,
 	applyEnv,
 	claimWorkspace,
+	createBranch,
+	deleteBranch,
 	fetchWorkspaces,
 	historyGraph,
 	inspectWorkspace,
@@ -39,10 +41,12 @@ import {
 	releaseLease,
 	removeProfile,
 	removeWorkspace,
+	renameBranch,
 	restoreOperation,
 	runAutoSync,
 	saveProfile,
 	setAutoSync,
+	switchBranch,
 	syncEnvProfile,
 	syncWorkspaces,
 	takeLease,
@@ -838,6 +842,111 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		assert.deepEqual((await readRegistry(config)).autoSync, ["demo"]);
 		await removeWorkspace(config, "second");
 		assert.equal((await readRegistry(config)).autoSync, undefined);
+	});
+
+	test("branch work: create, switch, rename and delete, without losing changes or commits", async (t) => {
+		const f = await fixture(t);
+		const head = await run(f.first, ["rev-parse", "HEAD"]);
+		await assert.rejects(createBranch(f.a, { name: "bad name" }), {
+			code: "BRANCH_NAME",
+		});
+		await assert.rejects(createBranch(f.a, { name: "-x" }), {
+			code: "BRANCH_NAME",
+		});
+		// From a remote-tracking branch, without switching.
+		const made = await createBranch(f.a, {
+			name: "from-remote",
+			from: "origin/master",
+		});
+		assert.deepEqual([made.switched, made.head], [false, head]);
+		await assert.rejects(createBranch(f.a, { name: "from-remote" }), {
+			code: "BRANCH_EXISTS",
+		});
+		// Uncommitted changes: a new branch at this commit keeps them; a switch away is refused.
+		await writeFile(join(f.first, "hello.txt"), "work in progress\n");
+		const wip = await createBranch(f.a, { name: "wip", switch: true });
+		assert.equal(wip.switched, true);
+		assert.equal(
+			await readFile(join(f.first, "hello.txt"), "utf8"),
+			"work in progress\n",
+		);
+		await assert.rejects(switchBranch(f.a, "master"), {
+			code: "WORKSPACE_BUSY",
+		});
+		await run(f.first, ["commit", "-am", "wip"]);
+		assert.equal((await switchBranch(f.a, "master")).switched, true);
+		assert.equal((await switchBranch(f.a, "master")).switched, false);
+		await assert.rejects(switchBranch(f.a, "nope"), { code: "BRANCH_MISSING" });
+		// Rename; never the base branch.
+		await renameBranch(f.a, { from: "wip", to: "feature" });
+		await assert.rejects(renameBranch(f.a, { from: "master", to: "main" }), {
+			code: "BRANCH_BASE",
+		});
+		await assert.rejects(
+			renameBranch(f.a, { from: "feature", to: "from-remote" }),
+			{ code: "BRANCH_EXISTS" },
+		);
+		// Delete: not the current or base branch; the preview counts commits only it has.
+		await assert.rejects(deleteBranch(f.a, "master"), {
+			code: "BRANCH_CURRENT",
+		});
+		const plan = await deleteBranch(f.a, "feature", { dryRun: true });
+		assert.deepEqual([plan.result, plan.unique], ["planned", 1]);
+		const tip = await run(f.first, ["rev-parse", "feature"]);
+		const deleted = await deleteBranch(f.a, "feature");
+		assert.equal(deleted.result, "deleted");
+		assert.equal(await run(f.first, ["rev-parse", deleted.backup ?? ""]), tip);
+		await assert.rejects(
+			run(f.first, ["rev-parse", "--verify", "refs/heads/feature"]),
+		);
+		assert.equal(
+			(await deleteBranch(f.a, "from-remote", { dryRun: true })).unique,
+			0,
+		);
+		// A published branch can go on the remote too; a branch without one cannot.
+		assert.equal(
+			(await deleteBranch(f.a, "from-remote", { dryRun: true })).remote,
+			undefined,
+		);
+		await run(f.first, ["branch", "pub", "master"]);
+		await run(f.first, ["push", "-u", "origin", "pub"]);
+		const both = await deleteBranch(f.a, "pub", { dryRun: true });
+		assert.deepEqual(both.remote, { branch: "origin/pub", unique: 0 });
+		const gone = await deleteBranch(f.a, "pub", { remote: true });
+		assert.equal(gone.remote?.deleted, true);
+		await assert.rejects(
+			run(f.remote, ["rev-parse", "--verify", "refs/heads/pub"]),
+		);
+		// A remote branch that moved since the last fetch is refused, and nothing changes.
+		await run(f.first, ["branch", "moved", "master"]);
+		await run(f.first, ["push", "-u", "origin", "moved"]);
+		await run(f.seed, ["fetch", "origin"]);
+		await run(f.seed, ["switch", "-c", "moved", "origin/moved"]);
+		await writeFile(join(f.seed, "moved.txt"), "newer\n");
+		await run(f.seed, ["add", "."]);
+		await run(f.seed, ["commit", "-m", "newer"]);
+		await run(f.seed, ["push", "origin", "moved"]);
+		await assert.rejects(deleteBranch(f.a, "moved", { remote: true }), {
+			code: "GIT_PUSH_REJECTED",
+		});
+		await run(f.first, ["rev-parse", "--verify", "refs/heads/moved"]);
+		await run(f.remote, ["rev-parse", "--verify", "refs/heads/moved"]);
+		await assert.rejects(renameBranch(f.a, { from: "moved", to: "master" }), {
+			code: "BRANCH_BASE",
+		});
+		// The base branch on the remote is never offered.
+		assert.equal(
+			(await deleteBranch(f.a, "master", { dryRun: true }).catch(() => null))
+				?.remote,
+			undefined,
+		);
+		// Someone else's lease keeps branch work out.
+		await takeLease(f.a, { holder: "agent-1" });
+		await assert.rejects(switchBranch(f.a, "from-remote"), { code: "LEASED" });
+		assert.equal(
+			(await switchBranch(f.a, "from-remote", { as: "agent-1" })).switched,
+			true,
+		);
 	});
 
 	test("rebase moves branches stacked under the current one with it, each backed up and restorable", async (t) => {

@@ -445,10 +445,13 @@ function render() {
 		(node) => node.dataset.key,
 	);
 	// Read fields directly: FormData skips them while the UI is locked (disabled).
-	const open = $("#edit-form, #lease-form");
+	const open = $("#edit-form, #lease-form, #branch-form");
 	const draft = [...(open?.elements ?? [])]
 		.filter((field) => field.name)
-		.map((field) => [field.name, field.value]);
+		.map((field) => [
+			field.name,
+			field.type === "checkbox" ? field.checked : field.value,
+		]);
 	const typing = open?.contains(document.activeElement)
 		? document.activeElement.name
 		: null;
@@ -492,7 +495,9 @@ function render() {
 	const form = open && $(`#${open.id}`);
 	if (form) {
 		for (const [key, value] of draft)
-			if (form.elements[key]) form.elements[key].value = value;
+			if (form.elements[key])
+				form.elements[key][typeof value === "boolean" ? "checked" : "value"] =
+					value;
 		if (typing) form.elements[typing]?.focus();
 	}
 	$("#sync-result").replaceChildren(
@@ -724,7 +729,13 @@ function renderWorkspace(state) {
 					plural(state.branches.length, "local branch", "local branches"),
 				),
 				table(
-					["Branch", "Upstream", "Ahead", "Behind"],
+					[
+						"Branch",
+						"Upstream",
+						"Ahead",
+						"Behind",
+						el("span", { className: "visually-hidden" }, "Actions"),
+					],
 					state.branches.map((branch) => [
 						[
 							pill("local", branch.name, { current: branch.current }),
@@ -737,9 +748,26 @@ function renderWorkspace(state) {
 								: el("span", { className: "none" }, "no upstream"),
 						branch.ahead ?? "",
 						branch.behind ?? "",
+						branchActions(workspace, branch),
 					]),
 					"branches",
 				),
+				branching?.workspace === workspace.name
+					? branchForm(workspace, state)
+					: el(
+							"p",
+							{ className: "branch-new" },
+							el(
+								"button",
+								{
+									type: "button",
+									className: "small",
+									dataset: { branchNew: workspace.name },
+									onclick: () => toggleBranchForm(workspace.name, "new"),
+								},
+								"New branch…",
+							),
+						),
 			),
 		!state.error &&
 			el(
@@ -872,6 +900,207 @@ async function restoreMove(workspace, operation) {
 	else say(`Restored ${branch} in ${workspace.name} to ${short(result.to)}.`);
 }
 
+// Branch work: switch, new, rename and delete, from a workspace card's branch table.
+let branching = null; // { workspace, mode: "new" | "rename", branch? }
+
+function branchActions(workspace, branch) {
+	const small = (label, aria, onclick) =>
+		el(
+			"button",
+			{ type: "button", className: "small", ariaLabel: aria, onclick },
+			label,
+		);
+	const base = branch.name === workspace.base;
+	return el(
+		"span",
+		{ className: "row-actions" },
+		!branch.current &&
+			small("Switch", `Switch ${workspace.name} to ${branch.name}`, () =>
+				switchTo(workspace, branch.name),
+			),
+		!base &&
+			small("Rename", `Rename ${branch.name}`, () =>
+				toggleBranchForm(workspace.name, "rename", branch.name),
+			),
+		!branch.current &&
+			!base &&
+			small("Delete…", `Delete ${branch.name}`, () =>
+				removeBranch(workspace, branch.name),
+			),
+	);
+}
+
+function toggleBranchForm(name, mode, branch) {
+	const same =
+		branching?.workspace === name &&
+		branching.mode === mode &&
+		branching.branch === branch;
+	$("#edit-form, #lease-form, #branch-form")?.remove();
+	branching = same ? null : { workspace: name, mode, branch };
+	editing = null;
+	leasing = null;
+	render();
+	if (branching) $("#branch-form [name=branch]")?.focus();
+	else $(`[data-branch-new="${CSS.escape(name)}"]`)?.focus();
+}
+
+function branchForm(workspace, state) {
+	const renaming = branching.mode === "rename";
+	const others = state.branches.filter((item) => !item.current);
+	const remote = `${workspace.remote}/${workspace.base}`;
+	return el(
+		"form",
+		{ id: "branch-form", className: "edit grid", onsubmit: saveBranch },
+		el(
+			"label",
+			{},
+			renaming ? `New name for ${branching.branch}` : "Name",
+			el("input", {
+				name: "branch",
+				required: true,
+				value: renaming ? branching.branch : "",
+				spellcheck: false,
+				autocomplete: "off",
+			}),
+		),
+		!renaming &&
+			el(
+				"label",
+				{},
+				"From",
+				el(
+					"select",
+					{ name: "from" },
+					el(
+						"option",
+						{ value: "" },
+						state.branch ? `Current (${state.branch})` : "Current commit",
+					),
+					...others.map((item) =>
+						el("option", { value: item.name }, item.name),
+					),
+					el("option", { value: remote }, remote),
+				),
+			),
+		!renaming &&
+			el(
+				"label",
+				{ className: "inline wide" },
+				el("input", { type: "checkbox", name: "switch", checked: true }),
+				"Switch to it",
+			),
+		el(
+			"div",
+			{ className: "actions wide" },
+			el(
+				"button",
+				{ type: "submit", className: "primary" },
+				renaming ? "Rename" : "Create",
+			),
+			el(
+				"button",
+				{
+					type: "button",
+					onclick: () =>
+						toggleBranchForm(workspace.name, branching.mode, branching.branch),
+				},
+				"Cancel",
+			),
+		),
+		el("p", {
+			id: "branch-error",
+			className: "alert wide",
+			role: "alert",
+			hidden: true,
+		}),
+	);
+}
+
+async function saveBranch(event) {
+	event.preventDefault();
+	const form = event.currentTarget;
+	const { workspace, mode, branch } = branching;
+	const name = form.elements.branch.value.trim();
+	const result =
+		mode === "rename"
+			? await call(
+					"branchRename",
+					{ name: workspace, from: branch, to: name },
+					{ busy: "Renaming…", alert: "branch-error" },
+				)
+			: await call(
+					"branchCreate",
+					{
+						name: workspace,
+						branch: name,
+						from: form.elements.from.value,
+						switch: form.elements.switch.checked,
+					},
+					{ busy: "Creating…", alert: "branch-error" },
+				);
+	if (!result) return;
+	branching = null;
+	await refresh();
+	say(
+		mode === "rename"
+			? `Renamed ${branch} to ${name} in ${workspace}.`
+			: `Created ${name} in ${workspace}${result.switched ? " and switched to it" : ""}.`,
+	);
+}
+
+async function switchTo(workspace, branch) {
+	if (
+		!(await call(
+			"branchSwitch",
+			{ name: workspace.name, branch },
+			{ busy: "Switching…" },
+		))
+	)
+		return;
+	await refresh();
+	say(`Switched ${workspace.name} to ${branch}.`);
+}
+
+// The preview says what only this branch holds; the tip is backed up either way.
+async function removeBranch(workspace, branch) {
+	const plan = await call("branchDelete", {
+		name: workspace.name,
+		branch,
+		dryRun: true,
+	});
+	if (!plan) return;
+	if (
+		!confirm(
+			plan.unique > 0
+				? `Delete ${branch}? ${plural(plan.unique, "commit")} on it ${plan.unique > 1 ? "are" : "is"} on no other branch or tag. Its tip is kept as a backup, so it can be recovered.`
+				: `Delete ${branch}? Every commit on it is also on another branch or tag.`,
+		)
+	)
+		return;
+	// A second, separate question: deleting on the remote affects everyone who uses it.
+	const remote =
+		plan.remote &&
+		confirm(
+			`Also delete ${plan.remote.branch} on the remote? Anyone else using it loses it too.${plan.remote.unique > 0 ? ` ${plural(plan.remote.unique, "commit")} would then be on no branch or tag; the tips are kept as local backups.` : ""}\n\nOK deletes both. Cancel deletes only the local branch.`,
+		);
+	const deleted = await call(
+		"branchDelete",
+		{ name: workspace.name, branch, remote: remote === true },
+		{ busy: remote ? "Deleting here and on the remote…" : "Deleting…" },
+	);
+	if (!deleted) return;
+	await refresh();
+	// The local tip is the branch as it was; a remote tip that differed is named too.
+	const gone = deleted.remote?.deleted ? deleted.remote : undefined;
+	const other =
+		gone && gone.backup !== deleted.backup
+			? ` ${gone.branch} was at ${gone.backup}.`
+			: "";
+	say(
+		`Deleted ${branch} from ${workspace.name}${gone ? ` and ${gone.branch}` : ""}.${deleted.unique > 0 || gone?.unique > 0 ? ` To bring it back: git branch ${branch} ${deleted.backup}.${other}` : ""}`,
+	);
+}
+
 // Taking a lease: who, why (optional) and for how long. The holder is remembered.
 let leasing = null;
 const HOLDER_KEY = "clonelane.holder:v1";
@@ -886,8 +1115,9 @@ const savedHolder = () => {
 function toggleLease(name) {
 	leasing = leasing === name ? null : name;
 	// The next form starts fresh, not with the closing one's draft.
-	$("#edit-form, #lease-form")?.remove();
+	$("#edit-form, #lease-form, #branch-form")?.remove();
 	editing = null;
+	branching = null;
 	render();
 	if (leasing) $("#lease-form [name=note]")?.focus();
 	else $(`[data-lease="${CSS.escape(name)}"]`)?.focus();
@@ -1185,8 +1415,9 @@ let editing = null;
 function toggleEdit(name) {
 	editing = editing === name ? null : name;
 	// The next form starts fresh, not with the closing one's draft.
-	$("#edit-form, #lease-form")?.remove();
+	$("#edit-form, #lease-form, #branch-form")?.remove();
 	leasing = null;
+	branching = null;
 	render();
 	if (editing) $("#edit-form [name=newName]")?.focus();
 	else focusEdit(name);

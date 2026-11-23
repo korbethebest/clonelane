@@ -11,6 +11,8 @@ import { dirname, join } from "node:path";
 import {
 	addWorkspace,
 	ClonelaneError,
+	createBranch,
+	deleteBranch,
 	fetchWorkspaces,
 	historyGraph,
 	inspectWorkspace,
@@ -19,10 +21,12 @@ import {
 	releaseLease,
 	removeProfile,
 	removeWorkspace,
+	renameBranch,
 	restoreOperation,
 	saveProfile,
 	selectWorkspaces,
 	setAutoSync,
+	switchBranch,
 	syncEnvProfile,
 	syncWorkspaces,
 	takeLease,
@@ -197,6 +201,25 @@ export function createHandlers(config, { statusCache } = {}) {
 				dryRun: dryRun === true,
 				rebase: rebase === true,
 				fetch: dryRun !== true && fetched !== true,
+			}),
+		// Branch work in one workspace (see src/branches.ts for the safety rules).
+		branchSwitch: async ({ name, branch }) =>
+			switchBranch(await named(name), String(branch ?? "")),
+		branchCreate: async ({ name, branch, from, switch: andSwitch }) =>
+			createBranch(await named(name), {
+				name: String(branch ?? ""),
+				from: from ? String(from) : undefined,
+				switch: andSwitch === true,
+			}),
+		branchRename: async ({ name, from, to }) =>
+			renameBranch(await named(name), {
+				from: String(from ?? ""),
+				to: String(to ?? ""),
+			}),
+		branchDelete: async ({ name, branch, dryRun, remote }) =>
+			deleteBranch(await named(name), String(branch ?? ""), {
+				dryRun: dryRun === true,
+				remote: remote === true,
 			}),
 		autoSync: ({ group, on }) =>
 			setAutoSync(config, String(group ?? ""), on === true),

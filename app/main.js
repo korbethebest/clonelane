@@ -21,6 +21,9 @@ const handlers = {
 	},
 };
 
+// Its own taskbar entry and icon on Windows, not Electron's.
+app.setAppUserModelId("Clonelane");
+
 app.whenReady().then(() => {
 	// The page needs no camera, notifications or other browser permissions.
 	session.defaultSession.setPermissionRequestHandler((_web, _kind, answer) =>
@@ -39,6 +42,7 @@ app.whenReady().then(() => {
 		minWidth: 720,
 		minHeight: 520,
 		title: "Clonelane",
+		icon: join(import.meta.dirname, "icon.png"),
 		webPreferences: {
 			preload: join(import.meta.dirname, "preload.cjs"),
 			contextIsolation: true,
