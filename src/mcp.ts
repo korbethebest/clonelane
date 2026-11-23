@@ -72,12 +72,23 @@ function minutes(args: Args): number {
 		fail("INVALID_ARGUMENT", '"minutes" must be a whole number.');
 	return value as number;
 }
-function holderOf(args: Args, context: Context, key = "holder"): string {
-	const holder = text(args, key) ?? context.holder;
+// A server started with CLONELANE_HOLDER speaks for that holder only: a model cannot
+// release or act on another holder's lease by naming it.
+function named(args: Args, context: Context, key: string): string | undefined {
+	const given = text(args, key);
+	if (given !== undefined && context.holder && given !== context.holder)
+		fail(
+			"INVALID_ARGUMENT",
+			`This server acts as "${context.holder}" (CLONELANE_HOLDER); "${key}" cannot name another holder.`,
+		);
+	return given ?? context.holder;
+}
+function holderOf(args: Args, context: Context): string {
+	const holder = named(args, context, "holder");
 	if (!holder)
 		fail(
 			"INVALID_ARGUMENT",
-			`"${key}" is required (or set CLONELANE_HOLDER for the server).`,
+			'"holder" is required (or set CLONELANE_HOLDER for the server).',
 		);
 	return holder;
 }
@@ -85,6 +96,8 @@ function holderOf(args: Args, context: Context, key = "holder"): string {
 async function target(args: Args, context: Context): Promise<Workspace> {
 	const registry = await context.registry();
 	const name = text(args, "workspace");
+	if (name !== undefined && text(args, "path") !== undefined)
+		fail("INVALID_ARGUMENT", 'Give "workspace" or "path", not both.');
 	if (name === undefined)
 		return workspaceAt(registry, text(args, "path") ?? context.cwd);
 	const workspace = registry.workspaces.find((item) => item.name === name);
@@ -310,7 +323,7 @@ export const tools: Tool[] = [
 					dryRun: preview,
 					rebase: flag(args, "rebase", false),
 					fetch: !preview,
-					as: text(args, "as") ?? context.holder,
+					as: named(args, context, "as"),
 				},
 			);
 		},
@@ -351,7 +364,7 @@ export const tools: Tool[] = [
 				{
 					dryRun: preview,
 					overwrite: flag(args, "overwrite", false),
-					as: text(args, "as") ?? context.holder,
+					as: named(args, context, "as"),
 				},
 			);
 		},
@@ -402,7 +415,7 @@ export const tools: Tool[] = [
 			);
 			return restoreOperation(owner, id, {
 				dryRun: flag(args, "dry_run", true),
-				as: text(args, "as") ?? context.holder,
+				as: named(args, context, "as"),
 			});
 		},
 	},
@@ -479,7 +492,7 @@ export function mcpSession(options: {
 				if (typeof args !== "object" || Array.isArray(args))
 					fail("INVALID_ARGUMENT", "Arguments must be an object.");
 				for (const key of Object.keys(args as Args))
-					if (!(key in tool.inputSchema.properties))
+					if (!Object.hasOwn(tool.inputSchema.properties, key))
 						fail("INVALID_ARGUMENT", `Unknown argument "${key}".`);
 				const data = await tool.run(args as Args, context);
 				return reply(id, {
@@ -487,6 +500,11 @@ export function mcpSession(options: {
 				});
 			} catch (caught) {
 				// Never forward raw errors: they can carry paths, Git output or env contents.
+				// stderr (not the protocol channel) gets the kind of failure, for diagnosis.
+				if (!(caught instanceof ClonelaneError))
+					process.stderr.write(
+						`clonelane mcp: ${tool.name} failed (${(caught as { code?: unknown })?.code ?? (caught as Error)?.name ?? "error"})\n`,
+					);
 				const body =
 					caught instanceof ClonelaneError
 						? { error: caught.code, message: caught.message }
@@ -528,11 +546,14 @@ export async function serveMcp(
 			continue;
 		}
 		// Requests run side by side; Clonelane's own locks order the writes.
-		const task = handle(message).then((response) => {
-			if (response) output.write(`${JSON.stringify(response)}\n`);
-		});
+		const task = handle(message)
+			.then((response) => {
+				if (response) output.write(`${JSON.stringify(response)}\n`);
+			})
+			// A closed pipe must not take the server (or the other requests) down.
+			.catch(() => {})
+			.finally(() => pending.delete(task));
 		pending.add(task);
-		task.finally(() => pending.delete(task));
 	}
 	await Promise.all(pending);
 }

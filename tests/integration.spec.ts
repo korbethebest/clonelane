@@ -655,7 +655,7 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		const before = await run(f.first, ["rev-parse", "HEAD"]);
 		await f.publish();
 		await fetchWorkspaces((await readRegistry(config)).workspaces);
-		const requests = [
+		const requests: object[] = [
 			{
 				jsonrpc: "2.0",
 				id: 1,
@@ -692,14 +692,14 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 				method: "tools/call",
 				params: {
 					name: "lease_take",
-					arguments: { workspace: "first", holder: "bad name" },
+					arguments: { workspace: "first", holder: "someone-else" },
 				},
 			},
 			{
 				jsonrpc: "2.0",
 				id: 7,
 				method: "tools/call",
-				params: { name: "sync", arguments: { force: true } },
+				params: { name: "sync", arguments: { constructor: true } },
 			},
 			{
 				jsonrpc: "2.0",
@@ -757,7 +757,9 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		assert.ok(Array.isArray(body(5)));
 		assert.equal(await run(f.first, ["rev-parse", "HEAD"]), before);
 		assert.equal(by.get(6).result.isError, true);
-		assert.equal(body(6).error, "LEASE_HOLDER");
+		// A server running as claude-1 cannot speak for another holder.
+		assert.equal(body(6).error, "INVALID_ARGUMENT");
+		assert.match(body(6).message, /claude-1/);
 		assert.equal(body(7).error, "INVALID_ARGUMENT");
 		assert.equal(by.get(8).error.code, -32602);
 		assert.equal(by.get(9).error.code, -32601);
