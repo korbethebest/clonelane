@@ -203,6 +203,7 @@ export async function updateWorkspace(
 		}
 		Object.assign(workspace, next);
 		updated = workspace;
+		dropEmptyAutoSync(registry);
 	});
 	return updated as Workspace;
 }
@@ -229,6 +230,7 @@ export async function removeWorkspace(
 		registry.workspaces = registry.workspaces.filter(
 			(item) => item !== workspace,
 		);
+		dropEmptyAutoSync(registry);
 	});
 }
 
@@ -356,6 +358,17 @@ export async function workspaceAt(
 			"This folder is not inside a registered workspace. Name one, or run clonelane status to list them.",
 		);
 	return match;
+}
+
+// A group left empty drops out of automatic sync, so a later group of the same name
+// is never synced unattended without being turned on again.
+function dropEmptyAutoSync(registry: Registry): void {
+	if (!registry.autoSync) return;
+	const kept = registry.autoSync.filter((group) =>
+		registry.workspaces.some((item) => item.group === group),
+	);
+	if (kept.length) registry.autoSync = kept;
+	else delete registry.autoSync;
 }
 
 /**

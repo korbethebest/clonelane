@@ -30,6 +30,7 @@ export {
 export type { RestoreResult } from "./restore.ts";
 export { listOperations, restoreOperation } from "./restore.ts";
 export type {
+	AutoSyncRun,
 	BaseUpdate,
 	FetchResult,
 	SyncPlan,

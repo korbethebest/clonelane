@@ -2189,23 +2189,28 @@ async function autoFetch() {
 			.call("fetch", { group: scope })
 			.catch(failure);
 		// Groups kept up to date: fast-forward them from what was just fetched.
+		// Not after a failed fetch: that would move branches from stale refs.
 		const synced = [];
-		for (const name of registry.autoSync ?? []) {
+		const unsynced = [];
+		for (const name of fetched.ok ? (registry.autoSync ?? []) : []) {
 			if (scope && scope !== name) continue;
 			const result = await window.clonelane
 				.call("sync", { group: name, fetched: true })
 				.catch(failure);
 			if (result.ok) synced.push(...result.data);
+			else unsynced.push(name);
 		}
+		for (const item of synced)
+			if (item.result === "failed") unsynced.push(item.name);
 		// Read status inside the same wait, so no action can see it half-updated.
 		const statuses = await window.clonelane
 			.call("status", { group: scope })
 			.catch(failure);
-		return { fetched, synced, statuses };
+		return { fetched, synced, unsynced, statuses };
 	})().finally(() => {
 		backgroundFetch = null;
 	});
-	const { fetched, synced, statuses } = await backgroundFetch;
+	const { fetched, synced, unsynced, statuses } = await backgroundFetch;
 	const updated = synced
 		.filter((item) => outcome(item, true) === "updated")
 		.map((item) => item.name);
@@ -2236,7 +2241,9 @@ async function autoFetch() {
 	const problem =
 		!fetched.ok || failed.length
 			? `Automatic fetch failed${failed.length ? ` for ${failed.map((item) => item.name).join(", ")}` : ""}. Click Fetch remote to see why.`
-			: "";
+			: unsynced.length
+				? `Automatic sync failed for ${unsynced.join(", ")}. Preview on the Sync tab to see why.`
+				: "";
 	// An action that waited for this fetch owns the status bar now.
 	if (pending > 0 || !current) return;
 	if (problem && problem !== lastFailure) say(problem);

@@ -832,6 +832,12 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		);
 		assert.equal((await readRegistry(config)).autoSync, undefined);
 		await assert.rejects(cli(["worker", "--every", "1"]), /USAGE/);
+		// A group whose last workspace is gone drops out, so a new group of that name starts off.
+		await setAutoSync(config, "demo", true);
+		await removeWorkspace(config, "first");
+		assert.deepEqual((await readRegistry(config)).autoSync, ["demo"]);
+		await removeWorkspace(config, "second");
+		assert.equal((await readRegistry(config)).autoSync, undefined);
 	});
 
 	test("dry run does not fetch or create recovery refs; explicit fetch then fast-forward updates master", async (t) => {

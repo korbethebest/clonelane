@@ -394,18 +394,16 @@ async function main(): Promise<void> {
 				"USAGE",
 				"Use auto-sync on <group>, auto-sync off <group> or auto-sync list.",
 			);
-		const autoSync = await setAutoSync(config, name, argument === "on");
-		// Turning it on shows what it would do right now (cached refs, nothing changes).
-		print(
+		// Turning it on shows what it would do right now (cached refs, nothing changes),
+		// made first so a group is never left on without one.
+		const preview =
 			argument === "on"
-				? {
-						autoSync,
-						preview: await syncWorkspaces(selectWorkspaces(registry, name), {
-							dryRun: true,
-						}),
-					}
-				: { autoSync },
-		);
+				? await syncWorkspaces(selectWorkspaces(registry, name), {
+						dryRun: true,
+					})
+				: undefined;
+		const autoSync = await setAutoSync(config, name, argument === "on");
+		print(preview ? { autoSync, preview } : { autoSync });
 		return;
 	}
 	if (command === "worker") {
@@ -423,11 +421,13 @@ async function main(): Promise<void> {
 					"EMPTY",
 					"No group has automatic sync on. Turn one on with clonelane auto-sync on <group>.",
 				);
-			const runs = await runAutoSync(current);
-			for (const run of runs)
-				console.log(JSON.stringify({ time: new Date().toISOString(), ...run }));
-			return runs.some((run) =>
-				run.results.some((item) => item.result === "failed"),
+			// Each group is printed as soon as it is done.
+			const runs = await runAutoSync(current, undefined, (run) =>
+				console.log(JSON.stringify({ time: new Date().toISOString(), ...run })),
+			);
+			return runs.some(
+				(run) =>
+					run.error || run.results.some((item) => item.result === "failed"),
 			);
 		};
 		if (values.once) {
