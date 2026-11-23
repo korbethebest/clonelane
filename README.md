@@ -60,12 +60,12 @@ Each workspace is fetched and synced on its own: one failure (an unreachable rem
 | Feature branch, no `--rebase` | Keep feature checkout unchanged |
 | Feature branch with `--rebase` | Rebase current unpublished, linear branch onto fetched base |
 | Feature has an upstream, appears in remote refs, or contains merge commits | Skip rebase |
-| Other local branches stacked under the feature (their tips are in `base..HEAD`) | Rebase them along with it (`git rebase --update-refs`), each backed up and journaled; skip if one is published or checked out in another worktree |
+| Other local branches stacked under the feature (their tips are in `base..HEAD`) | Rebase them along with it (`git rebase --update-refs`), each backed up and journaled. If one has an upstream or is checked out in another worktree, or Git is older than 2.38, rebase the feature alone as before and report them in `stackLeft` |
 | Dirty or active merge/rebase/cherry-pick/revert/bisect | Skip checkout mutations |
 | Detached HEAD | Skip checkout mutations |
 | The base adds a path that already exists locally (for example an ignored `.env`) | Skip, so Git never overwrites it |
 
-Only the **current feature branch** of each registered directory is rebased, together with the local branches stacked under it (`stack` in the result), so a stack stays stacked. Other feature branches are listed but not rewritten. Moving a stack needs Git 2.38 or later. `baseUpdate` in the JSON result reports updates to an unused local base independently from the feature checkout result. No command stashes changes, pushes, force-pushes, resolves conflicts automatically, or switches your current branch.
+Only the **current feature branch** of each registered directory is rebased, together with the local branches stacked under it (`stack` in the result), so a stack stays stacked. Other feature branches are listed but not rewritten. `baseUpdate` in the JSON result reports updates to an unused local base independently from the feature checkout result. No command stashes changes, pushes, force-pushes, resolves conflicts automatically, or switches your current branch.
 
 Before a branch update, Clonelane creates a recovery ref under `refs/clonelane/backups/`. The JSON result includes that ref. After a failed rebase it attempts `git rebase --abort`; a failure to abort is reported as requiring manual recovery. Create a rescue branch from the reported backup with ordinary Git, after inspecting the workspace. Backups are retained until you deliberately remove them.
 

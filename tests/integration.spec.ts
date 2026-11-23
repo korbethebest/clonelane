@@ -859,11 +859,17 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		assert.equal(plan?.action, "rebase");
 		assert.deepEqual(plan?.stack, ["feat-a"]);
 
-		// The lower branch checked out in another worktree cannot move: the stack is skipped.
+		// The lower branch checked out in another worktree cannot move: the current branch is
+		// rebased alone, as before stacks, and the result says what stays.
 		const side = join(f.root, "side");
 		await run(f.first, ["worktree", "add", side, "feat-a"]);
 		const [busy] = await syncWorkspaces([f.a], { dryRun: true, rebase: true });
-		assert.equal(busy?.reason, "stacked-branch-checked-out-elsewhere");
+		assert.equal(busy?.action, "rebase");
+		assert.equal(busy?.stack, undefined);
+		assert.deepEqual(busy?.stackLeft, {
+			branches: ["feat-a"],
+			reason: "stacked-branch-checked-out-elsewhere",
+		});
 		await run(f.first, ["worktree", "remove", side]);
 
 		const [result] = await syncWorkspaces([f.a], {
@@ -871,6 +877,7 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 			fetch: false,
 		});
 		assert.equal(result?.result, "updated");
+		assert.deepEqual(result?.stack, ["feat-a"]);
 		const newA = await run(f.first, ["rev-parse", "feat-a"]);
 		// Still stacked: feat-a now sits on the new base, and feat-b on feat-a.
 		assert.notEqual(newA, oldA);

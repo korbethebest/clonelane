@@ -26,6 +26,8 @@ export interface SyncPlan {
 	 * rebase moves along with it so the stack stays stacked.
 	 */
 	stack?: string[];
+	/** Stacked branches a rebase leaves where they are, and why (see stackOf). */
+	stackLeft?: { branches: string[]; reason: string };
 }
 
 export function planSync(status: WorkspaceStatus, rebase = false): SyncPlan {
@@ -150,15 +152,27 @@ async function checkedPlan(
 		return { ...plan, action: "skip", reason: "published-or-merge-branch" };
 	if (!related)
 		return { ...plan, action: "skip", reason: "unrelated-histories" };
-	// Branches stacked under this one move with it (git rebase --update-refs); each must be
-	// as safe to rewrite as the current branch, and free to move.
-	const stack = (
+	return { ...plan, ...(await stackOf(state)) };
+}
+
+/**
+ * Local branches stacked under the current one (tips in base..HEAD). They move with it
+ * (git rebase --update-refs) only all together and only when each is free to move: Git
+ * cannot move some and leave others. Otherwise the current branch is rebased alone, as
+ * before stacks were supported, and `stackLeft` says which branches stay and why.
+ */
+async function stackOf(
+	state: WorkspaceStatus,
+): Promise<Pick<SyncPlan, "stack" | "stackLeft">> {
+	const path = state.workspace.path;
+	if (!state.baseHead) return {};
+	const refs = (
 		await git(path, [
 			"for-each-ref",
 			"--merged",
 			"HEAD",
 			"--no-merged",
-			state.baseHead ?? "",
+			state.baseHead,
 			"--format=%(refname)",
 			"refs/heads/",
 		])
@@ -170,30 +184,26 @@ async function checkedPlan(
 				ref !== `refs/heads/${state.branch}` &&
 				ref !== `refs/heads/${state.workspace.base}`,
 		);
-	if (!stack.length) return plan;
-	const names = stack.map((ref) => ref.slice("refs/heads/".length));
+	if (!refs.length) return {};
+	const branches = refs.map((ref) => ref.slice("refs/heads/".length));
+	const left = (reason: string) => ({ stackLeft: { branches, reason } });
 	if (
-		names.some(
+		branches.some(
 			(name) => state.branches.find((item) => item.name === name)?.upstream,
 		)
 	)
-		return { ...plan, action: "skip", reason: "published-or-merge-branch" };
+		return left("stacked-branch-published");
 	const checkedOut = (
 		await git(path, ["worktree", "list", "--porcelain"])
 	).split("\n");
-	for (const ref of stack)
+	for (const ref of refs)
 		if (
 			checkedOut.includes(`branch ${ref}`) ||
 			(await busyElsewhere(state.commonDir, ref))
 		)
-			return {
-				...plan,
-				action: "skip",
-				reason: "stacked-branch-checked-out-elsewhere",
-			};
-	if (!(await updateRefsSupported(path)))
-		return { ...plan, action: "skip", reason: "git-too-old-for-stacks" };
-	return { ...plan, stack: names };
+			return left("stacked-branch-checked-out-elsewhere");
+	if (!(await updateRefsSupported(path))) return left("git-too-old-for-stacks");
+	return { stack: branches };
 }
 
 // git rebase --update-refs arrived in Git 2.38.
@@ -408,11 +418,16 @@ async function syncOne(
 				await git(workspace.path, ["update-ref", backup, state.head]);
 				// Recheck immediately before changing checkout. External Git processes do not honor our lock.
 				const current = await inspectWorkspace(workspace);
+				// The stack too: a stacked branch checked out elsewhere since the plan would be
+				// skipped by Git while its journal entry said it moved.
+				const stackNow = plan.action === "rebase" ? await stackOf(current) : {};
 				if (
 					current.head !== state.head ||
 					current.branch !== state.branch ||
 					current.dirty ||
-					current.operation
+					current.operation ||
+					JSON.stringify(stackNow) !==
+						JSON.stringify({ stack: plan.stack, stackLeft: plan.stackLeft })
 				) {
 					return {
 						...plan,
@@ -433,24 +448,48 @@ async function syncOne(
 				});
 				// Each stacked branch gets its own backup and journal entry, so each can be
 				// restored on its own.
-				const stacked: { ref: string; id: string }[] = [];
-				for (const name of plan.stack ?? []) {
-					const ref = `refs/heads/${name}`;
-					const tip = await git(workspace.path, ["rev-parse", "--verify", ref]);
-					const saved = `refs/clonelane/backups/${randomUUID()}`;
-					await git(workspace.path, ["update-ref", saved, tip]);
-					stacked.push({
-						ref,
-						id: await begin(state.commonDir, {
-							workspace: workspace.name,
-							path: workspace.path,
-							kind: "rebase",
+				const stacked: {
+					name: string;
+					ref: string;
+					from: string;
+					id: string;
+				}[] = [];
+				try {
+					for (const name of plan.stack ?? []) {
+						const ref = `refs/heads/${name}`;
+						const tip = await git(workspace.path, [
+							"rev-parse",
+							"--verify",
+							ref,
+						]);
+						const saved = `refs/clonelane/backups/${randomUUID()}`;
+						await git(workspace.path, ["update-ref", saved, tip]);
+						stacked.push({
+							name,
 							ref,
 							from: tip,
-							to: state.baseHead ?? "",
-							backup: saved,
-						}),
-					});
+							id: await begin(state.commonDir, {
+								workspace: workspace.name,
+								path: workspace.path,
+								kind: "rebase",
+								ref,
+								from: tip,
+								to: state.baseHead ?? "",
+								backup: saved,
+							}),
+						});
+					}
+				} catch {
+					// A stacked branch went away meanwhile: nothing has moved yet; close every entry.
+					for (const entry of [id, ...stacked.map((item) => item.id)])
+						await finish(state.commonDir, entry, "failed");
+					return {
+						...plan,
+						action: "skip",
+						reason: "workspace-changed",
+						result: "skipped",
+						backup,
+					};
 				}
 				const updateRefs = stacked.length > 0;
 				try {
@@ -480,16 +519,28 @@ async function syncOne(
 						() => undefined,
 					);
 					await finish(state.commonDir, id, "done", tip);
-					for (const item of stacked)
+					// Only a branch Git really moved counts as moved (it skips some refs quietly).
+					const moved: string[] = [];
+					for (const item of stacked) {
+						const now = await git(workspace.path, [
+							"rev-parse",
+							item.ref,
+						]).catch(() => undefined);
+						const done = now !== undefined && now !== item.from;
 						await finish(
 							state.commonDir,
 							item.id,
-							"done",
-							await git(workspace.path, ["rev-parse", item.ref]).catch(
-								() => undefined,
-							),
+							done ? "done" : "failed",
+							now,
 						);
-					return { ...plan, result: "updated", backup };
+						if (done) moved.push(item.name);
+					}
+					return {
+						...plan,
+						...(plan.stack ? { stack: moved } : {}),
+						result: "updated",
+						backup,
+					};
 				} catch (error) {
 					await finish(state.commonDir, id, "failed");
 					// A stopped rebase never moved the stacked refs: --update-refs moves them last.

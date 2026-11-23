@@ -21,6 +21,7 @@ export const reasons = {
 	"unrelated-histories": "unrelated histories",
 	"stacked-branch-checked-out-elsewhere":
 		"a branch stacked under it is checked out in another worktree",
+	"stacked-branch-published": "a branch stacked under it is published",
 	"git-too-old-for-stacks": "moving stacked branches needs Git 2.38 or later",
 	"fetch-failed": "fetching the base branch failed",
 	"local-files-in-the-way":

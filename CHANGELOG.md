@@ -6,7 +6,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
-- Stacked branches: `sync --rebase` also moves the local branches stacked under the current one (`git rebase --update-refs`), so the stack stays stacked. Each moved branch gets its own backup and journal entry and can be restored on its own. A stack with a published branch, or with a branch checked out in another worktree, is skipped. The result and the desktop app's preview list the stacked branches.
+- Stacked branches: `sync --rebase` also moves the local branches stacked under the current one (`git rebase --update-refs`), so the stack stays stacked. Each moved branch gets its own backup and journal entry and can be restored on its own. When the stack cannot move as a whole (a stacked branch has an upstream or is checked out in another worktree, or Git is older than 2.38), the current branch is rebased alone as before and `stackLeft` says which branches stay and why. The result and the desktop app's preview list both.
 - Automatic sync: `clonelane auto-sync on|off <group>` and `auto-sync list` keep a group up to date without being asked; turning one on prints what a sync would do now. `clonelane worker [--every 15] [--once]` fetches and fast-forwards those groups by the usual sync rules, never rebasing, and skips dirty, busy and leased workspaces.
 - The desktop app's Sync tab has **Keep up to date automatically** per group (with a preview before it turns on); while Auto-fetch is on, each automatic fetch also fast-forwards those groups.
 - Library: `setAutoSync()`, `runAutoSync()`.
