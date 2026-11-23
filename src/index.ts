@@ -1,3 +1,10 @@
+export type { DeleteResult } from "./branches.ts";
+export {
+	createBranch,
+	deleteBranch,
+	renameBranch,
+	switchBranch,
+} from "./branches.ts";
 export type {
 	EnvChange,
 	EnvOptions,

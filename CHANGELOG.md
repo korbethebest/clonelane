@@ -6,6 +6,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- Branch work in the desktop app: each card's branch table has **Switch**, **Rename** and **Delete…** per branch, and **New branch…** (from the current commit, another local branch or the remote base, optionally switching to it). Switching needs a clean workspace (never a stash); a branch made at the current commit keeps uncommitted changes. The base branch cannot be renamed or deleted, nor can the current branch or one checked out in another worktree be deleted; deleting shows how many commits only that branch has and backs its tip up first. All of it respects leases. Library: `switchBranch()`, `createBranch()`, `renameBranch()`, `deleteBranch()`.
 - Automatic sync: `clonelane auto-sync on|off <group>` and `auto-sync list` keep a group up to date without being asked; turning one on prints what a sync would do now. `clonelane worker [--every 15] [--once]` fetches and fast-forwards those groups by the usual sync rules, never rebasing, and skips dirty, busy and leased workspaces.
 - The desktop app's Sync tab has **Keep up to date automatically** per group (with a preview before it turns on); while Auto-fetch is on, each automatic fetch also fast-forwards those groups.
 - Library: `setAutoSync()`, `runAutoSync()`.
