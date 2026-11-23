@@ -14,8 +14,10 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { delimiter, dirname, join, relative, resolve, sep } from "node:path";
+import { PassThrough, Writable } from "node:stream";
 import { describe, type TestContext, test } from "node:test";
 import { parseEnv, promisify } from "node:util";
+import { findEditor, openInEditor } from "../src/editor.ts";
 import {
 	describeGitFailure,
 	findGit,
@@ -54,6 +56,7 @@ import {
 	workspaceAt,
 } from "../src/index.ts";
 import { begin } from "../src/journal.ts";
+import { runTui } from "../src/tui.ts";
 
 const exec = promisify(execFile);
 const sandbox = resolve("tests.local");
@@ -1024,6 +1027,76 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 			rebase: true,
 		});
 		assert.equal(published?.reason, "published-or-merge-branch");
+	});
+
+	test("tui: lists workspaces, fetches, previews and applies a sync, and restores the terminal", async (t) => {
+		const f = await fixture(t);
+		const config = join(f.root, "registry.json");
+		await addWorkspace(config, { name: "a", path: f.first, group: "demo" });
+		await addWorkspace(config, { name: "b", path: f.second, group: "demo" });
+		await assert.rejects(runTui({ config }), { code: "USAGE" });
+		const remoteHead = await f.publish();
+		const input = Object.assign(new PassThrough(), {
+			isTTY: true,
+			setRawMode: () => {},
+		});
+		let text = "";
+		const output = Object.assign(
+			new Writable({
+				write(chunk, _encoding, done) {
+					text += chunk;
+					done();
+				},
+			}),
+			{ isTTY: true, columns: 100, rows: 30 },
+		);
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escapes.
+		const plain = () => text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+		const until = async (what: string) => {
+			for (let i = 0; i < 1200 && !plain().includes(what); i++)
+				await new Promise((resolve) => setTimeout(resolve, 50));
+			assert.ok(plain().includes(what), what);
+		};
+		const done = runTui({ config }, input, output);
+		await until("2 workspaces");
+		await until("NAME");
+		input.write("f");
+		await until("Fetched 2.");
+		input.write("s");
+		await until("y applies it");
+		assert.match(plain(), /a\s+fast-forward/);
+		input.write("y");
+		await until("Synced.");
+		assert.equal(await run(f.first, ["rev-parse", "HEAD"]), remoteHead);
+		input.write("q");
+		await done;
+		assert.ok(text.endsWith("\x1b[?25h\x1b[?1049l"));
+	});
+
+	test("open finds the editor program: CLONELANE_EDITOR must be a full path", async (t) => {
+		const f = await fixture(t);
+		assert.throws(() => findEditor({ CLONELANE_EDITOR: "code" }), {
+			code: "EDITOR",
+		});
+		const program = join(f.root, "editor.exe");
+		await writeFile(program, "");
+		assert.equal(findEditor({ CLONELANE_EDITOR: program }), program);
+		assert.equal(findEditor({ PATH: "" }), undefined);
+		// A program that cannot start is reported, not announced as opened.
+		await assert.rejects(
+			openInEditor(
+				{
+					name: "a",
+					path: f.first,
+					group: "demo",
+					repository: "",
+					remote: "origin",
+					base: "master",
+				},
+				{ CLONELANE_EDITOR: program },
+			),
+			{ code: "EDITOR" },
+		);
 	});
 
 	test("dry run does not fetch or create recovery refs; explicit fetch then fast-forward updates master", async (t) => {

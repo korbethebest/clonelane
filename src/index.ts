@@ -5,6 +5,7 @@ export {
 	renameBranch,
 	switchBranch,
 } from "./branches.ts";
+export { findEditor, openInEditor } from "./editor.ts";
 export type {
 	EnvChange,
 	EnvOptions,
