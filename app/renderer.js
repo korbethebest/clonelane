@@ -1307,7 +1307,7 @@ function syncLines(item) {
 	const done = item.result === "updated";
 	const checkout = {
 		"fast-forward": `${done ? "Fast-forwarded" : "Fast-forward"} ${branch} to ${ref}`,
-		rebase: `${done ? "Rebased" : "Rebase"} ${branch} onto ${ref}`,
+		rebase: `${done ? "Rebased" : "Rebase"} ${branch} onto ${ref}${item.stack?.length ? `, with ${item.stack.join(", ")} stacked under it` : ""}`,
 		"up-to-date": `${branch} is up to date`,
 		skip: `${branch} stays as it is — ${reasonText(item.reason)}`,
 	}[item.action];
