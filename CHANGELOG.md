@@ -4,6 +4,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-23
+
 ### Added
 
 - Workspace leases: `clonelane lease take <workspace> --holder <name> [--note] [--minutes]`, `lease release [--holder] [--force]` and `lease list`. While another holder's lease is live, `sync` skips the workspace (`leased`) and `env` and `restore` refuse it (`LEASED`); `--as <holder>` acts as the holder. Leases lapse after their time (default 120 minutes), live per checkout in its `.git` directory, and are advisory. `status` shows the holder (`WorkspaceStatus.lease`); the library adds `takeLease()`, `releaseLease()`, `readLease()` and `workspaceLease()`.
@@ -78,7 +80,8 @@ First public release.
 - Git is launched by absolute path from absolute `PATH` entries only, so a `git.exe` in a working tree never runs in place of Git, even when `PATH` contains an empty or relative entry.
 - Credentials in remote URLs, including remote-helper URLs (`<transport>::<address>`), are never stored or printed.
 
-[Unreleased]: https://github.com/korbethebest/clonelane/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/korbethebest/clonelane/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/korbethebest/clonelane/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/korbethebest/clonelane/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/korbethebest/clonelane/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/korbethebest/clonelane/compare/v0.1.0...v0.2.0
