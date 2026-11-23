@@ -1538,7 +1538,7 @@ function syncLines(item) {
 	const done = item.result === "updated";
 	const checkout = {
 		"fast-forward": `${done ? "Fast-forwarded" : "Fast-forward"} ${branch} to ${ref}`,
-		rebase: `${done ? "Rebased" : "Rebase"} ${branch} onto ${ref}`,
+		rebase: `${done ? "Rebased" : "Rebase"} ${branch} onto ${ref}${item.stack?.length ? `, with ${item.stack.join(", ")} stacked under it` : ""}`,
 		"up-to-date": `${branch} is up to date`,
 		skip: `${branch} stays as it is — ${reasonText(item.reason)}`,
 	}[item.action];
@@ -1553,7 +1553,12 @@ function syncLines(item) {
 			"up-to-date": `${capitalize(local)} is up to date`,
 			skip: `${capitalize(local)} stays as it is — ${reasonText(base.reason)}`,
 		}[base.action];
-	return [checkout, baseLine].filter(Boolean);
+	// Stacked branches that stay put when the current branch is rebased alone.
+	const left =
+		item.action === "rebase" &&
+		item.stackLeft &&
+		`${item.stackLeft.branches.join(", ")} ${item.stackLeft.branches.length > 1 ? "stay" : "stays"} where ${item.stackLeft.branches.length > 1 ? "they are" : "it is"} — ${reasonText(item.stackLeft.reason)}`;
+	return [checkout, left, baseLine].filter(Boolean);
 }
 
 const groupTitles = {

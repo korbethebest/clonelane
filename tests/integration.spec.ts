@@ -949,6 +949,83 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		);
 	});
 
+	test("rebase moves branches stacked under the current one with it, each backed up and restorable", async (t) => {
+		const f = await fixture(t);
+		const commit = async (file: string) => {
+			await writeFile(join(f.first, file), `${file}\n`);
+			await run(f.first, ["add", file]);
+			await run(f.first, ["commit", "-m", file]);
+		};
+		await run(f.first, ["switch", "-c", "feat-a"]);
+		await commit("a.txt");
+		await run(f.first, ["switch", "-c", "feat-b"]);
+		await commit("b.txt");
+		const oldA = await run(f.first, ["rev-parse", "feat-a"]);
+		const base = await f.publish();
+		await fetchWorkspaces([f.a]);
+
+		const [plan] = await syncWorkspaces([f.a], { dryRun: true, rebase: true });
+		assert.equal(plan?.action, "rebase");
+		assert.deepEqual(plan?.stack, ["feat-a"]);
+
+		// The lower branch checked out in another worktree cannot move: the current branch is
+		// rebased alone, as before stacks, and the result says what stays.
+		const side = join(f.root, "side");
+		await run(f.first, ["worktree", "add", side, "feat-a"]);
+		const [busy] = await syncWorkspaces([f.a], { dryRun: true, rebase: true });
+		assert.equal(busy?.action, "rebase");
+		assert.equal(busy?.stack, undefined);
+		assert.deepEqual(busy?.stackLeft, {
+			branches: ["feat-a"],
+			reason: "stacked-branch-checked-out-elsewhere",
+		});
+		await run(f.first, ["worktree", "remove", side]);
+
+		const [result] = await syncWorkspaces([f.a], {
+			rebase: true,
+			fetch: false,
+		});
+		assert.equal(result?.result, "updated");
+		assert.deepEqual(result?.stack, ["feat-a"]);
+		const newA = await run(f.first, ["rev-parse", "feat-a"]);
+		// Still stacked: feat-a now sits on the new base, and feat-b on feat-a.
+		assert.notEqual(newA, oldA);
+		assert.equal(await run(f.first, ["merge-base", "feat-a", "master"]), base);
+		assert.equal(await run(f.first, ["merge-base", "feat-a", "feat-b"]), newA);
+		assert.equal(
+			await run(f.first, ["rev-list", "--count", "master..feat-b"]),
+			"2",
+		);
+
+		// Each branch has its own journal entry; feat-a can be restored on its own.
+		const operations = await listOperations(f.a);
+		const moveA = operations.find((item) => item.ref === "refs/heads/feat-a");
+		assert.equal(moveA?.state, "done");
+		assert.equal(moveA?.tip, newA);
+		assert.ok(
+			operations.some(
+				(item) => item.ref === "refs/heads/feat-b" && item.state === "done",
+			),
+		);
+		const restored = await restoreOperation(f.a, moveA?.id ?? "");
+		assert.equal(restored.result, "restored");
+		assert.equal(await run(f.first, ["rev-parse", "feat-a"]), oldA);
+
+		// A published branch in the stack is never rewritten.
+		await run(f.first, ["switch", "feat-a"]);
+		await run(f.first, ["push", "-u", "origin", "feat-a"]);
+		await run(f.first, ["switch", "feat-b"]);
+		await run(f.first, ["reset", "--hard", "feat-a"]);
+		await commit("c.txt");
+		await f.publish("more.txt");
+		await fetchWorkspaces([f.a]);
+		const [published] = await syncWorkspaces([f.a], {
+			dryRun: true,
+			rebase: true,
+		});
+		assert.equal(published?.reason, "published-or-merge-branch");
+	});
+
 	test("dry run does not fetch or create recovery refs; explicit fetch then fast-forward updates master", async (t) => {
 		const f = await fixture(t);
 		const before = await run(f.first, ["rev-parse", "HEAD"]);
