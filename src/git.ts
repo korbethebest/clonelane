@@ -27,12 +27,28 @@ export function hooksPath(): string {
 // "." or other relative PATH entry means the current directory: the working tree, whose
 // files (a committed git.exe) come from the repository. Only fully absolute entries count.
 export function findGit(pathEnv = process.env.PATH ?? ""): string {
+	const found = findProgram(
+		process.platform === "win32" ? ["git.com", "git.exe"] : ["git"],
+		pathEnv,
+	);
+	if (found) return found;
+	fail(
+		"GIT_MISSING",
+		"Git was not found on PATH. Install Git and add it to PATH.",
+	);
+}
+
+/** The first of `names` found in an absolute PATH entry (see findGit), or undefined. */
+export function findProgram(
+	names: string[],
+	pathEnv = process.env.PATH ?? "",
+): string | undefined {
 	const windows = process.platform === "win32";
 	const absolute = windows ? /^(?:[A-Za-z]:[\\/]|\\\\)/ : /^\//;
 	for (const raw of pathEnv.split(delimiter)) {
 		const dir = raw.replace(/^"(.*)"$/, "$1");
 		if (!absolute.test(dir)) continue;
-		for (const name of windows ? ["git.com", "git.exe"] : ["git"]) {
+		for (const name of names) {
 			const candidate = join(dir, name);
 			try {
 				if (!statSync(candidate).isFile()) continue;
@@ -41,10 +57,7 @@ export function findGit(pathEnv = process.env.PATH ?? ""): string {
 			} catch {}
 		}
 	}
-	fail(
-		"GIT_MISSING",
-		"Git was not found on PATH. Install Git and add it to PATH.",
-	);
+	return undefined;
 }
 
 let gitPath: string | undefined;

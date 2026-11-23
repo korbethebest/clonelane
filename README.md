@@ -209,6 +209,18 @@ clonelane env profile remove dev
 
 There is **no central plaintext secret database**: this version reads an explicitly chosen existing source `.env` and writes the target. It does not provide an encrypted vault, keychain integration or network secret sharing yet. The source and destination remain plaintext and readable to processes with filesystem access. POSIX files use mode `0600`; on Windows, inherited directory ACLs apply and must be appropriate. See [SECURITY.md](SECURITY.md).
 
+## Terminal overview
+
+```sh
+clonelane tui                       # every workspace; --group to show one group
+clonelane open                      # open the current folder's workspace in an editor
+clonelane open b                    # or a named one
+```
+
+`tui` fills the terminal with the workspace list (branch, uncommitted changes, ahead/behind the base, lease) and the selected workspace's branches. Keys: **↑↓** (or **j**/**k**) select, **r** reloads, **f** fetches, **s** previews a sync and **y** applies it (fetching first, fast-forward only; it never rebases), **o** opens the selected workspace in an editor, **q** quits. It follows the same rules as `status`, `fetch` and `sync`, including leases and `CLONELANE_HOLDER`. It needs an interactive terminal; scripts use `status --json`. `NO_COLOR` turns colours off.
+
+`open` and **o** start the editor program in `CLONELANE_EDITOR` (its full path, for example to `Code.exe`, `cursor` or `zed`) with the workspace folder; without it, VS Code's `code` command found on `PATH`. The program is started directly, never through a shell, so a folder name cannot run as a command.
+
 ## Desktop app
 
 The app is not in the npm package yet. Run it from a clone of this repository (requires pnpm 10.32.1):
@@ -266,9 +278,5 @@ pnpm build
 ```
 
 Integration tests create local bare repositories, clones and linked worktrees under `tests.local/`, with synthetic environment values. They use no Git hosting accounts or production repositories. Cleanup is restricted to each generated fixture. CI runs on Windows and Linux. See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
-
-## Next milestones
-
-1. TUI overview and optional editor integration.
 
 MIT licensed. No telemetry and no automatic package publication.

@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- `clonelane tui`: a full-screen terminal overview of every workspace (branch, changes, ahead/behind the base, lease) and the selected one's branches, with single keys to reload, fetch, preview and apply a sync (fast-forward only), open in an editor and quit. No new dependencies.
+- `clonelane open [<workspace>]` opens a workspace folder in an editor: `CLONELANE_EDITOR` (the program's full path), or VS Code's `code` on `PATH`. Started directly, never through a shell.
+- Library: `findEditor()`, `openInEditor()`.
+
 ## [0.7.0] - 2026-11-23
 
 ### Added

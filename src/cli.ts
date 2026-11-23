@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 
+import { openInEditor } from "./editor.ts";
 import { applyEnv, planEnv, syncEnvProfile } from "./env.ts";
 import { ClonelaneError, fail } from "./errors.ts";
 import { atomicWrite } from "./files.ts";
@@ -27,6 +28,7 @@ import {
 } from "./registry.ts";
 import { listOperations, operationOwner, restoreOperation } from "./restore.ts";
 import { fetchWorkspaces, runAutoSync, syncWorkspaces } from "./sync.ts";
+import { runTui } from "./tui.ts";
 import { inspectWorkspace } from "./workspaces.ts";
 
 const help = `Clonelane — keep your Git workspaces in the same lane.
@@ -53,6 +55,8 @@ const help = `Clonelane — keep your Git workspaces in the same lane.
   clonelane mcp
   clonelane auto-sync on|off <group> | auto-sync list
   clonelane worker [--every 15] [--once]
+  clonelane tui [--group <group>]
+  clonelane open [<workspace>]
 
 Global: --config <file> (default: ~/.config/clonelane/registry.json), --help
 --as <holder> on sync, restore and env: act as that lease holder.
@@ -69,6 +73,11 @@ unless called with dry_run false.
 auto-sync on keeps a group up to date without being asked (fetch, then fast-forward only;
 never rebase), and prints what a sync would do now. The desktop app's automatic fetch and
 worker do it: worker every --every minutes (5 to 1440), or one pass with --once.
+
+tui shows every workspace in the terminal: arrow keys select, r reloads, f fetches,
+s previews a sync (y applies it), o opens the selected one in an editor, q quits.
+open starts an editor on a workspace (the current folder's by default): CLONELANE_EDITOR,
+the full path to the editor's program, or else VS Code's code command.
 
 status and sync --dry-run use cached remote refs and do not fetch.
 sync fetches the selected base before updating. No command pushes.
@@ -172,10 +181,12 @@ async function main(): Promise<void> {
 		mcp: [],
 		"auto-sync": [],
 		worker: ["every", "once"],
+		tui: ["group"],
+		open: [],
 	};
 	// A lease holder may act on its own leased workspaces; profiles store no holder.
 	if (
-		["sync", "restore"].includes(command ?? "") ||
+		["sync", "restore", "tui"].includes(command ?? "") ||
 		(command === "env" && argument !== "profile")
 	)
 		allowed[command as string]?.push("as");
@@ -339,6 +350,25 @@ async function main(): Promise<void> {
 			force: values.force,
 		});
 		print({ workspace: workspace.name, released });
+		return;
+	}
+	if (command === "open") {
+		const name = argument;
+		const workspace =
+			name === undefined
+				? await workspaceAt(registry, process.cwd())
+				: registry.workspaces.find((item) => item.name === name);
+		if (positionals.length > 2 || !workspace)
+			fail(
+				"USAGE",
+				"open takes one registered workspace name, or none inside a workspace.",
+			);
+		print({ workspace: workspace.name, editor: openInEditor(workspace) });
+		return;
+	}
+	if (command === "tui") {
+		if (positionals.length !== 1) fail("USAGE", "tui takes no arguments.");
+		await runTui({ config, group: values.group, as });
 		return;
 	}
 	if (command === "here") {
