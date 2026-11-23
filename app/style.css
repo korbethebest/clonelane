@@ -941,9 +941,11 @@ button.quiet {
 	color: var(--muted);
 }
 
-button.quiet:hover:not(:disabled) {
-	border-color: var(--line);
-	color: var(--text);
+/* No hover or press effect: it stays text-like. */
+button.quiet:hover:not(:disabled),
+button.quiet:active:not(:disabled) {
+	border-color: transparent;
+	background: transparent;
 }
 
 button.quiet[aria-expanded="true"] {
