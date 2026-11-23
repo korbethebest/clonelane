@@ -325,16 +325,24 @@ export async function workspaceAt(
 	registry: Registry,
 	dir: string,
 ): Promise<Workspace> {
-	const here = samePath(await realpath(dir).catch(() => resolve(dir)));
+	// Both sides through realpath: a symlink, junction or other spelling of a folder
+	// (macOS /tmp, a registry written by hand) still names the same place.
+	const real = (path: string) =>
+		realpath(path)
+			.catch(() => resolve(path))
+			.then(samePath);
+	const here = await real(dir);
+	const roots = await Promise.all(
+		registry.workspaces.map((item) => real(item.path)),
+	);
 	const match = registry.workspaces
-		.filter((item) => {
-			const root = samePath(item.path);
-			return (
+		.map((item, index) => ({ item, root: roots[index] as string }))
+		.filter(
+			({ root }) =>
 				here === root ||
-				here.startsWith(root.endsWith(sep) ? root : `${root}${sep}`)
-			);
-		})
-		.sort((a, b) => b.path.length - a.path.length)[0];
+				here.startsWith(root.endsWith(sep) ? root : `${root}${sep}`),
+		)
+		.sort((a, b) => b.root.length - a.root.length)[0]?.item;
 	if (!match)
 		fail(
 			"NOT_A_WORKSPACE",

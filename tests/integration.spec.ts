@@ -543,6 +543,14 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		assert.equal(again.workspace.name, "second");
 		assert.equal(again.renewed, true);
 		assert.equal(again.lease.note, "task");
+		const long = await takeLease(claimed.workspace, {
+			holder: "codex-1",
+			minutes: 600,
+		});
+		const retried = await claimWorkspace(registry.workspaces, {
+			holder: "codex-1",
+		});
+		assert.equal(retried.lease.until, long.until);
 		// Nothing else is free: one is leased, the other dirty.
 		await assert.rejects(
 			claimWorkspace(registry.workspaces, { holder: "codex-2" }),
@@ -616,6 +624,22 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 			join(f.root, ".agents", "skills", "clonelane", "SKILL.md"),
 		]);
 		const skill = await readFile(installed.installed[1], "utf8");
+		// Reinstalling keeps an edited copy beside the fresh one.
+		await writeFile(installed.installed[0], "my notes\n");
+		const again2 = JSON.parse(
+			(await cli(["agent", "install", "--project", "--claude"], f.root)).stdout,
+		);
+		assert.deepEqual(again2.backups, [`${installed.installed[0]}.bak`]);
+		assert.equal(
+			await readFile(`${installed.installed[0]}.bak`, "utf8"),
+			"my notes\n",
+		);
+		assert.equal(await readFile(installed.installed[0], "utf8"), skill);
+		// A holder name the CLI could never use is refused up front.
+		await assert.rejects(
+			cli(["status"], f.root, "my agent"),
+			/CLONELANE_HOLDER/,
+		);
 		assert.match(skill, /^---\nname: clonelane\ndescription: /);
 	});
 

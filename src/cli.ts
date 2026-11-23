@@ -8,6 +8,7 @@ import { applyEnv, planEnv, syncEnvProfile } from "./env.ts";
 import { ClonelaneError, fail } from "./errors.ts";
 import { atomicWrite } from "./files.ts";
 import {
+	checkHolder,
 	claimWorkspace,
 	DEFAULT_MINUTES,
 	releaseLease,
@@ -175,8 +176,19 @@ async function main(): Promise<void> {
 	}
 	const print = (data: unknown) => console.log(JSON.stringify(data, null, 2));
 	// One name per agent or person, set once instead of on every command.
-	const holder = values.holder ?? (process.env.CLONELANE_HOLDER || undefined);
-	const as = values.as ?? (process.env.CLONELANE_HOLDER || undefined);
+	const fromEnv = process.env.CLONELANE_HOLDER || undefined;
+	if (fromEnv) {
+		try {
+			checkHolder(fromEnv);
+		} catch {
+			fail(
+				"USAGE",
+				"CLONELANE_HOLDER may contain only letters, digits, dots, underscores, @ and hyphens, up to 64 characters.",
+			);
+		}
+	}
+	const holder = values.holder ?? fromEnv;
+	const as = values.as ?? fromEnv;
 	const minutes = () => {
 		if (values.minutes !== undefined && !/^\d+$/.test(values.minutes))
 			fail("USAGE", "--minutes takes a whole number of minutes.");
@@ -194,6 +206,7 @@ async function main(): Promise<void> {
 		const base = values.project ? process.cwd() : homedir();
 		const both = !values.claude && !values.agents;
 		const installed: string[] = [];
+		const backups: string[] = [];
 		for (const [wanted, dir] of [
 			[values.claude || both, ".claude"],
 			[values.agents || both, ".agents"],
@@ -201,11 +214,17 @@ async function main(): Promise<void> {
 			if (!wanted) continue;
 			const folder = join(base, dir, "skills", "clonelane");
 			await mkdir(folder, { recursive: true });
-			// Ours to replace: reinstalling after an upgrade brings the skill up to date.
-			await atomicWrite(join(folder, "SKILL.md"), skill);
-			installed.push(join(folder, "SKILL.md"));
+			const file = join(folder, "SKILL.md");
+			// Reinstalling brings the skill up to date; a copy someone edited is kept beside it.
+			const before = await readFile(file, "utf8").catch(() => null);
+			if (before != null && before !== skill) {
+				await atomicWrite(`${file}.bak`, before);
+				backups.push(`${file}.bak`);
+			}
+			await atomicWrite(file, skill);
+			installed.push(file);
 		}
-		print({ installed });
+		print({ installed, ...(backups.length ? { backups } : {}) });
 		return;
 	}
 	if (command === "register") {
@@ -304,7 +323,16 @@ async function main(): Promise<void> {
 	if (command === "here") {
 		if (positionals.length !== 1) fail("USAGE", "here takes no arguments.");
 		const workspace = await workspaceAt(registry, process.cwd());
-		print({ ...workspace, lease: await workspaceLease(workspace) });
+		// Still say which workspace this is when its lease or identity cannot be read.
+		const lease = await workspaceLease(workspace).then(
+			(value) => ({ lease: value }),
+			(error: unknown) => ({
+				lease: null,
+				error: error instanceof ClonelaneError ? error.code : "IO_ERROR",
+			}),
+		);
+		print({ ...workspace, ...lease });
+		if ("error" in lease) process.exitCode = 1;
 		return;
 	}
 	if (command === "claim") {

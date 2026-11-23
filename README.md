@@ -91,7 +91,7 @@ clonelane lease release b --holder agent-1
 ```
 
 - While someone else holds a lease, `sync` skips that workspace entirely (`leased`: not fetched, base ref untouched), and `env` and `restore` refuse it (`LEASED`). Pass `--as agent-1` to act as the holder on your own leased workspace.
-- The same holder taking it again renews it (the note stays unless a new one is given). A lease lapses on its own after `--minutes` (default 120, at most 7 days), so a holder that crashed never blocks forever. `lease release --force` clears someone else's.
+- The same holder taking it again renews it (the note stays unless a new one is given; a renewal never shortens it, so release and take it again for a shorter one). A lease lapses on its own after `--minutes` (default 120, at most 7 days), so a holder that crashed never blocks forever. `lease release --force` clears someone else's.
 - A lease is per checkout (each worktree has its own), stored as `clonelane-lease.json` in that checkout's `.git` directory. It is advisory: Git, editors and other tools ignore it, and holder names are not authenticated. Worktrees of one clone share its remote-tracking refs, so fetching an unleased sibling worktree still moves them. An unreadable lease file counts as held until `--force`.
 - `status` shows the holder; the library adds `takeLease()`, `releaseLease()`, `readLease()`, `workspaceLease()`, `claimWorkspace()`, `workspaceAt()` and `WorkspaceStatus.lease`.
 - In the desktop app, **Lease…** on a card takes one, **Renew** adds two hours, and **Release…** gives it back.
@@ -110,8 +110,8 @@ clonelane lease release            # done: give back the one this folder is in
 
 - `claim` picks a workspace in the group (by default the current folder's) with no lease, nothing uncommitted, no Git operation and no interrupted update, and leases it. A holder that already has one gets it back, renewed, so a retried claim never takes two. Concurrent claims are settled under the clone's lock. `NO_FREE_WORKSPACE` means every one is busy.
 - `lease take` and `lease release` without a workspace name use the one the current folder is in.
-- The skill (`skills/clonelane/SKILL.md` in the package) tells an agent to lease before working, to stay out of checkouts others hold, to preview before syncing, and to ask before overwriting `.env` keys. Run `agent install` again after upgrading; it replaces the installed copy.
-- `CLONELANE_HOLDER`, like any holder name, is not authenticated: it keeps cooperating agents apart, it does not stop one that ignores it.
+- The skill (`skills/clonelane/SKILL.md` in the package) tells an agent to lease before working, to stay out of checkouts others hold, to preview before syncing, and to ask before overwriting `.env` keys. Run `agent install` again after upgrading; it replaces the installed copy and keeps an edited one beside it as `SKILL.md.bak`.
+- `CLONELANE_HOLDER` must be a valid holder name, or every command refuses to run. Like any holder name, it is not authenticated: it keeps cooperating agents apart, it does not stop one that ignores it.
 
 ## Share `.env` keys
 

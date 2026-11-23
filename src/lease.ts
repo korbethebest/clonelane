@@ -28,7 +28,7 @@ const FILE = "clonelane-lease.json";
 const HOLDER = /^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$/;
 export const DEFAULT_MINUTES = 120;
 
-function checkHolder(holder: string): void {
+export function checkHolder(holder: string): void {
 	if (!HOLDER.test(holder))
 		fail(
 			"LEASE_HOLDER",
@@ -111,7 +111,11 @@ export async function takeLease(
 			holder: input.holder,
 			...(kept ? { note: kept } : {}),
 			since: current?.since || new Date(now).toISOString(),
-			until: new Date(now + minutes * 60_000).toISOString(),
+			// A renewal never shortens: a retry with the default time must not cut a long
+			// lease short. Release and take it again to shorten one.
+			until: new Date(
+				Math.max(now + minutes * 60_000, Date.parse(current?.until ?? "") || 0),
+			).toISOString(),
 		};
 		await atomicWrite(join(gitDir, FILE), `${JSON.stringify(lease)}\n`);
 		return lease;
