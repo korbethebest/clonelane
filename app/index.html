@@ -151,6 +151,16 @@
 				<div id="help-sync" class="help-pop" popover>
 					Apply fetches first and backs up every branch it moves. It never pushes or stashes.
 				</div>
+				<fieldset id="auto-sync" class="auto-sync" hidden>
+					<legend class="label-row">
+						Keep up to date automatically
+						<button type="button" class="help" data-help="help-auto-sync" aria-label="About automatic sync" aria-expanded="false">?</button>
+					</legend>
+					<div id="auto-sync-list"></div>
+				</fieldset>
+				<div id="help-auto-sync" class="help-pop" popover>
+					While the app is open with Auto-fetch on, or while <code>clonelane worker</code> runs, these groups are fetched and fast-forwarded every 15 minutes. Nothing is rebased, and workspaces with uncommitted changes, a lease or a Git operation in progress are skipped.
+				</div>
 			</section>
 
 			<section id="env" role="tabpanel" aria-labelledby="tab-env" hidden>

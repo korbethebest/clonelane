@@ -80,6 +80,22 @@ clonelane restore 1a2b3c4d5e6f7a8b            # move the branch back to its back
 
 Clonelane serializes its own writes with a lock in the shared Git directory. Other Git clients and AI agents do **not** honor that lock. Stop concurrent writers before syncing. The tool rechecks the checkout before mutation, but cannot guarantee protection against a different process changing it at exactly the same time. A crash can leave a stale lock: inspect running processes before removing it.
 
+### Automatic sync
+
+Keep a group up to date without being asked:
+
+```sh
+clonelane auto-sync on project      # saves the setting and prints what a sync would do now
+clonelane worker                    # every 15 minutes (--every 5 to 1440); --once for one pass
+clonelane auto-sync list
+clonelane auto-sync off project
+```
+
+- A pass fetches each group that is on, then applies the same rules as `clonelane sync` **without** `--rebase`: fast-forwards only, every move backed up and journaled, and dirty, detached, busy or leased workspaces skipped. Nothing is ever rebased unattended.
+- The desktop app does the same while it is open with **Auto-fetch** on: turn a group on under **Keep up to date automatically** on the Sync tab (it shows what would update first), and each automatic fetch then fast-forwards it.
+- `worker` prints one JSON line per group and pass, and reads the registry each pass, so turning groups on or off needs no restart. `worker --once` suits a scheduler (Task Scheduler, cron, launchd); it exits with 1 when a workspace failed or no group is on.
+- The setting is stored in the registry as `autoSync` (group names). Library: `setAutoSync()`, `runAutoSync()`.
+
 ## Leases: mark a workspace as in use
 
 When a person, a script or an agent is working in a clone, lease it so Clonelane leaves it alone:
@@ -251,7 +267,6 @@ Integration tests create local bare repositories, clones and linked worktrees un
 ## Next milestones
 
 1. Support for intentionally stacked feature branches.
-2. Reviewed, persisted sync policies and a background worker. No unattended rebase in this release.
-3. TUI overview and optional editor integration.
+2. TUI overview and optional editor integration.
 
 MIT licensed. No telemetry and no automatic package publication.

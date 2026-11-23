@@ -569,3 +569,50 @@ export async function fetchWorkspaces(
 			},
 	);
 }
+
+/**
+ * One unattended pass: for each automatic-sync group (or only `groups`), fetch and
+ * fast-forward as `clonelane sync` would, without rebase. Dirty, leased and busy
+ * workspaces are skipped as always. A group left without workspaces is skipped.
+ */
+export interface AutoSyncRun {
+	group: string;
+	results: SyncResult[];
+	/** Set when the group could not be synced at all; results is then empty. */
+	error?: { code: string; message: string };
+}
+
+export async function runAutoSync(
+	registry: { workspaces: Workspace[]; autoSync?: string[] },
+	groups?: string[],
+	onRun?: (run: AutoSyncRun) => void,
+): Promise<AutoSyncRun[]> {
+	const runs: AutoSyncRun[] = [];
+	for (const group of registry.autoSync ?? []) {
+		if (groups && !groups.includes(group)) continue;
+		const workspaces = registry.workspaces.filter(
+			(item) => item.group === group,
+		);
+		if (!workspaces.length) continue;
+		let run: AutoSyncRun;
+		try {
+			run = {
+				group,
+				results: await syncWorkspaces(workspaces, { fetch: true }),
+			};
+		} catch (error) {
+			// One group that cannot run must not stop the others.
+			run = {
+				group,
+				results: [],
+				error:
+					error instanceof ClonelaneError
+						? { code: error.code, message: error.message }
+						: { code: "FAILED", message: "This group could not be synced." },
+			};
+		}
+		runs.push(run);
+		onRun?.(run);
+	}
+	return runs;
+}

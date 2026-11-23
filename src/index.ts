@@ -23,18 +23,25 @@ export {
 	removeWorkspace,
 	saveProfile,
 	selectWorkspaces,
+	setAutoSync,
 	updateWorkspace,
 	workspaceAt,
 } from "./registry.ts";
 export type { RestoreResult } from "./restore.ts";
 export { listOperations, restoreOperation } from "./restore.ts";
 export type {
+	AutoSyncRun,
 	BaseUpdate,
 	FetchResult,
 	SyncPlan,
 	SyncResult,
 } from "./sync.ts";
-export { fetchWorkspaces, planSync, syncWorkspaces } from "./sync.ts";
+export {
+	fetchWorkspaces,
+	planSync,
+	runAutoSync,
+	syncWorkspaces,
+} from "./sync.ts";
 export type {
 	BranchInfo,
 	GraphCommit,

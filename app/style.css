@@ -302,7 +302,8 @@ fieldset.scope {
 	min-width: 0;
 }
 
-fieldset.targets {
+fieldset.targets,
+fieldset.auto-sync {
 	margin: 0;
 	padding: 0;
 	border: 0;
@@ -310,7 +311,8 @@ fieldset.targets {
 }
 
 fieldset.scope legend,
-fieldset.targets legend {
+fieldset.targets legend,
+fieldset.auto-sync legend {
 	padding: 0;
 	margin-bottom: var(--space-1);
 	color: var(--muted);
@@ -1167,6 +1169,28 @@ button.quiet[aria-expanded="true"] {
 	display: grid;
 	gap: var(--space-2);
 	margin-top: var(--space-2);
+}
+
+/* Set apart from the one-off sync above it: a standing setting, not part of Apply. */
+fieldset.auto-sync {
+	margin-top: var(--space-6);
+	padding-top: var(--space-4);
+	border-top: 1px solid var(--line);
+}
+
+/* Under the divider, not on it (a legend sits on its fieldset's border by default). */
+fieldset.auto-sync legend {
+	float: left;
+	width: 100%;
+}
+
+#auto-sync-list {
+	clear: both;
+}
+
+.auto-sync label {
+	display: flex;
+	margin-top: var(--space-1);
 }
 
 .target-row {
