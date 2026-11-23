@@ -1,11 +1,14 @@
 #!/usr/bin/env node
+import { mkdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 
 import { applyEnv, planEnv, syncEnvProfile } from "./env.ts";
 import { ClonelaneError, fail } from "./errors.ts";
+import { atomicWrite } from "./files.ts";
 import {
+	claimWorkspace,
 	DEFAULT_MINUTES,
 	releaseLease,
 	takeLease,
@@ -17,6 +20,7 @@ import {
 	removeProfile,
 	saveProfile,
 	selectWorkspaces,
+	workspaceAt,
 } from "./registry.ts";
 import { listOperations, restoreOperation } from "./restore.ts";
 import { fetchWorkspaces, syncWorkspaces } from "./sync.ts";
@@ -37,12 +41,23 @@ const help = `Clonelane — keep your Git workspaces in the same lane.
                         [--targets b,c]
   clonelane env profile list | remove <profile>
   clonelane env sync <profile> [--dry-run] [--overwrite]
-  clonelane lease take <workspace> --holder <name> [--note "why"] [--minutes 120]
-  clonelane lease release <workspace> [--holder <name>] [--force]
+  clonelane lease take [<workspace>] --holder <name> [--note "why"] [--minutes 120]
+  clonelane lease release [<workspace>] [--holder <name>] [--force]
   clonelane lease list [--group <group>] [--json]
+  clonelane claim [--group <group>] --holder <name> [--note "why"] [--minutes 120]
+  clonelane here
+  clonelane agent install [--claude] [--agents] [--project]
 
 Global: --config <file> (default: ~/.config/clonelane/registry.json), --help
 --as <holder> on sync, restore and env: act as that lease holder.
+CLONELANE_HOLDER in the environment is the default --holder and --as.
+lease take/release without a workspace use the one the current folder is in.
+claim leases a free workspace (no lease, nothing uncommitted) in the group, by default
+the current folder's, and prints its path; the holder's own lease is renewed instead.
+here prints the workspace the current folder is in, with its lease.
+agent install writes the Clonelane skill for coding agents: --claude to ~/.claude/skills,
+--agents to ~/.agents/skills (Codex, Gemini CLI and others); both by default. --project
+writes them under the current folder instead.
 
 status and sync --dry-run use cached remote refs and do not fetch.
 sync fetches the selected base before updating. No command pushes.
@@ -83,6 +98,9 @@ async function main(): Promise<void> {
 			minutes: { type: "string" },
 			force: { type: "boolean" },
 			as: { type: "string" },
+			claude: { type: "boolean" },
+			agents: { type: "boolean" },
+			project: { type: "boolean" },
 		},
 	});
 	if (values.help || positionals.length === 0) {
@@ -134,6 +152,9 @@ async function main(): Promise<void> {
 				: argument === "release"
 					? ["holder", "force"]
 					: ["group", "json"],
+		claim: ["group", "holder", "note", "minutes"],
+		here: [],
+		agent: ["claude", "agents", "project"],
 	};
 	// A lease holder may act on its own leased workspaces; profiles store no holder.
 	if (
@@ -153,6 +174,40 @@ async function main(): Promise<void> {
 		);
 	}
 	const print = (data: unknown) => console.log(JSON.stringify(data, null, 2));
+	// One name per agent or person, set once instead of on every command.
+	const holder = values.holder ?? (process.env.CLONELANE_HOLDER || undefined);
+	const as = values.as ?? (process.env.CLONELANE_HOLDER || undefined);
+	const minutes = () => {
+		if (values.minutes !== undefined && !/^\d+$/.test(values.minutes))
+			fail("USAGE", "--minutes takes a whole number of minutes.");
+		return values.minutes === undefined
+			? DEFAULT_MINUTES
+			: Number(values.minutes);
+	};
+	if (command === "agent") {
+		if (argument !== "install" || positionals.length !== 2)
+			fail("USAGE", "Use clonelane agent install.");
+		const skill = await readFile(
+			new URL("../skills/clonelane/SKILL.md", import.meta.url),
+			"utf8",
+		);
+		const base = values.project ? process.cwd() : homedir();
+		const both = !values.claude && !values.agents;
+		const installed: string[] = [];
+		for (const [wanted, dir] of [
+			[values.claude || both, ".claude"],
+			[values.agents || both, ".agents"],
+		] as const) {
+			if (!wanted) continue;
+			const folder = join(base, dir, "skills", "clonelane");
+			await mkdir(folder, { recursive: true });
+			// Ours to replace: reinstalling after an upgrade brings the skill up to date.
+			await atomicWrite(join(folder, "SKILL.md"), skill);
+			installed.push(join(folder, "SKILL.md"));
+		}
+		print({ installed });
+		return;
+	}
 	if (command === "register") {
 		if (!argument || !values.name || !values.group || positionals.length !== 2)
 			fail("USAGE", "register requires a path, --name and --group.");
@@ -217,33 +272,66 @@ async function main(): Promise<void> {
 	const registry = await readRegistry(config);
 	if (command === "lease" && (argument === "take" || argument === "release")) {
 		const name = positionals[2];
-		const workspace = registry.workspaces.find((item) => item.name === name);
-		if (positionals.length !== 3 || !workspace)
+		const workspace =
+			name === undefined
+				? await workspaceAt(registry, process.cwd())
+				: registry.workspaces.find((item) => item.name === name);
+		if (positionals.length > 3 || !workspace)
 			fail(
 				"USAGE",
-				`lease ${argument} requires one registered workspace name.`,
+				`lease ${argument} takes one registered workspace name, or none inside a workspace.`,
 			);
 		if (argument === "take") {
-			if (!values.holder) fail("USAGE", "lease take requires --holder.");
-			if (values.minutes !== undefined && !/^\d+$/.test(values.minutes))
-				fail("USAGE", "--minutes takes a whole number of minutes.");
-			const minutes =
-				values.minutes === undefined ? DEFAULT_MINUTES : Number(values.minutes);
+			if (!holder)
+				fail("USAGE", "lease take requires --holder (or CLONELANE_HOLDER).");
 			print({
 				workspace: workspace.name,
 				...(await takeLease(workspace, {
-					holder: values.holder,
+					holder,
 					note: values.note,
-					minutes,
+					minutes: minutes(),
 				})),
 			});
 			return;
 		}
 		const released = await releaseLease(workspace, {
-			holder: values.holder,
+			holder,
 			force: values.force,
 		});
 		print({ workspace: workspace.name, released });
+		return;
+	}
+	if (command === "here") {
+		if (positionals.length !== 1) fail("USAGE", "here takes no arguments.");
+		const workspace = await workspaceAt(registry, process.cwd());
+		print({ ...workspace, lease: await workspaceLease(workspace) });
+		return;
+	}
+	if (command === "claim") {
+		if (positionals.length !== 1) fail("USAGE", "claim takes no arguments.");
+		if (!holder)
+			fail("USAGE", "claim requires --holder (or CLONELANE_HOLDER).");
+		const group =
+			values.group ??
+			(
+				await workspaceAt(registry, process.cwd()).catch(() =>
+					fail(
+						"USAGE",
+						"claim requires --group outside a registered workspace.",
+					),
+				)
+			).group;
+		const claimed = await claimWorkspace(selectWorkspaces(registry, group), {
+			holder,
+			note: values.note,
+			minutes: minutes(),
+		});
+		print({
+			workspace: claimed.workspace.name,
+			path: claimed.workspace.path,
+			renewed: claimed.renewed,
+			...claimed.lease,
+		});
 		return;
 	}
 	if (command === "env" && argument === "sync") {
@@ -252,7 +340,7 @@ async function main(): Promise<void> {
 		const results = await syncEnvProfile(registry, positionals[2], {
 			dryRun: values["dry-run"],
 			overwrite: values.overwrite,
-			as: values.as,
+			as,
 		});
 		print(results);
 		if (results.some((result) => result.error)) process.exitCode = 1;
@@ -285,7 +373,7 @@ async function main(): Promise<void> {
 			overwrite: values.overwrite,
 			publicKeys: values["public-keys"]?.split(","),
 			prune: values.prune,
-			as: values.as,
+			as,
 		};
 		print(
 			await (argument === "apply" ? applyEnv : planEnv)(
@@ -328,7 +416,7 @@ async function main(): Promise<void> {
 			);
 		const result = await restoreOperation(owner, id, {
 			dryRun: values["dry-run"],
-			as: values.as,
+			as,
 		});
 		print(result);
 		if (result.result === "refused") process.exitCode = 1;
@@ -486,7 +574,7 @@ async function main(): Promise<void> {
 			dryRun: values["dry-run"],
 			rebase: values.rebase,
 			fetch: !values["dry-run"],
-			as: values.as,
+			as,
 		});
 		print(results);
 		if (results.some((result) => result.result === "failed"))

@@ -9,6 +9,7 @@ export { ClonelaneError } from "./errors.ts";
 export type { Operation } from "./journal.ts";
 export type { Lease } from "./lease.ts";
 export {
+	claimWorkspace,
 	readLease,
 	releaseLease,
 	takeLease,
@@ -23,6 +24,7 @@ export {
 	saveProfile,
 	selectWorkspaces,
 	updateWorkspace,
+	workspaceAt,
 } from "./registry.ts";
 export type { RestoreResult } from "./restore.ts";
 export { listOperations, restoreOperation } from "./restore.ts";

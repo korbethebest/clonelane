@@ -3,7 +3,11 @@ import { join } from "node:path";
 
 import { fail } from "./errors.ts";
 import { atomicWrite, readOptional, withLock } from "./files.ts";
-import { checkIdentity, type Workspace } from "./workspaces.ts";
+import {
+	checkIdentity,
+	inspectWorkspace,
+	type Workspace,
+} from "./workspaces.ts";
 
 /**
  * A note that a workspace is in use: by whom, why and until when. Clonelane leaves a
@@ -23,6 +27,14 @@ export interface Lease {
 const FILE = "clonelane-lease.json";
 const HOLDER = /^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$/;
 export const DEFAULT_MINUTES = 120;
+
+function checkHolder(holder: string): void {
+	if (!HOLDER.test(holder))
+		fail(
+			"LEASE_HOLDER",
+			"The holder name may contain only letters, digits, dots, underscores, @ and hyphens, up to 64 characters.",
+		);
+}
 const MAX_MINUTES = 7 * 24 * 60;
 
 function validLease(data: Partial<Lease> | null): data is Lease {
@@ -80,11 +92,7 @@ export async function takeLease(
 	workspace: Workspace,
 	input: { holder: string; note?: string; minutes?: number },
 ): Promise<Lease> {
-	if (!HOLDER.test(input.holder))
-		fail(
-			"LEASE_HOLDER",
-			"The holder name may contain only letters, digits, dots, underscores, @ and hyphens, up to 64 characters.",
-		);
+	checkHolder(input.holder);
 	const note = input.note?.trim() || undefined;
 	if (note && (note.length > 200 || /\p{Cc}/u.test(note)))
 		fail("LEASE_NOTE", "Keep the note to one line of at most 200 characters.");
@@ -133,4 +141,53 @@ export async function workspaceLease(
 	workspace: Workspace,
 ): Promise<Lease | null> {
 	return readLease((await checkIdentity(workspace)).gitDir);
+}
+
+/**
+ * Leases a free workspace from `workspaces` for `holder`: one with no lease, nothing
+ * uncommitted, no Git operation and no interrupted update. A workspace the holder already
+ * has is renewed and returned instead, so a retried claim never takes a second one. Two
+ * claims racing for the same workspace are settled by takeLease's lock: the loser moves on.
+ */
+export async function claimWorkspace(
+	workspaces: Workspace[],
+	input: { holder: string; note?: string; minutes?: number },
+): Promise<{ workspace: Workspace; lease: Lease; renewed: boolean }> {
+	checkHolder(input.holder);
+	const states = await Promise.all(
+		workspaces.map((workspace) =>
+			inspectWorkspace(workspace).catch(() => null),
+		),
+	);
+	const own = states.find((state) => state?.lease?.holder === input.holder);
+	if (own)
+		return {
+			workspace: own.workspace,
+			lease: await takeLease(own.workspace, input),
+			renewed: true,
+		};
+	for (const state of states) {
+		if (
+			!state ||
+			state.lease ||
+			state.dirty ||
+			state.operation ||
+			state.interrupted > 0
+		)
+			continue;
+		try {
+			return {
+				workspace: state.workspace,
+				lease: await takeLease(state.workspace, input),
+				renewed: false,
+			};
+		} catch (error) {
+			// Someone took it since it was read: try the next one.
+			if ((error as { code?: string }).code !== "LEASED") throw error;
+		}
+	}
+	return fail(
+		"NO_FREE_WORKSPACE",
+		"Every workspace in this group is leased, has uncommitted changes or is mid-operation. Release one, or register another clone or worktree.",
+	);
 }

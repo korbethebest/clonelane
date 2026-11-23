@@ -1,5 +1,5 @@
-import { mkdir } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { mkdir, realpath } from "node:fs/promises";
+import { dirname, resolve, sep } from "node:path";
 
 import { validateFile, validateKeys } from "./env.ts";
 import { fail } from "./errors.ts";
@@ -312,4 +312,33 @@ export async function removeProfile(path: string, name: string): Promise<void> {
 			fail("PROFILE", `Env profile "${name}" does not exist.`);
 		registry.profiles = registry.profiles.filter((item) => item.name !== name);
 	});
+}
+
+const samePath = (path: string) =>
+	process.platform === "win32" ? path.toLowerCase() : path;
+
+/**
+ * The registered workspace a folder is in (the innermost one, so a worktree kept inside
+ * another workspace's folder wins). Lets agents and scripts say "here" instead of a name.
+ */
+export async function workspaceAt(
+	registry: Registry,
+	dir: string,
+): Promise<Workspace> {
+	const here = samePath(await realpath(dir).catch(() => resolve(dir)));
+	const match = registry.workspaces
+		.filter((item) => {
+			const root = samePath(item.path);
+			return (
+				here === root ||
+				here.startsWith(root.endsWith(sep) ? root : `${root}${sep}`)
+			);
+		})
+		.sort((a, b) => b.path.length - a.path.length)[0];
+	if (!match)
+		fail(
+			"NOT_A_WORKSPACE",
+			"This folder is not inside a registered workspace. Name one, or run clonelane status to list them.",
+		);
+	return match;
 }

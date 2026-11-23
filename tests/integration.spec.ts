@@ -27,6 +27,7 @@ import {
 import {
 	addWorkspace,
 	applyEnv,
+	claimWorkspace,
 	fetchWorkspaces,
 	historyGraph,
 	inspectWorkspace,
@@ -44,6 +45,7 @@ import {
 	syncWorkspaces,
 	takeLease,
 	updateWorkspace,
+	workspaceAt,
 } from "../src/index.ts";
 import { begin } from "../src/journal.ts";
 
@@ -506,6 +508,115 @@ describe("isolated Git and env integration", { concurrency: 4 }, () => {
 		await assert.rejects(takeLease(f.b, { holder: "bad name" }), {
 			code: "LEASE_HOLDER",
 		});
+	});
+
+	test("claim leases a free workspace, renews the holder's own, and the CLI finds the current one", async (t) => {
+		const f = await fixture(t);
+		const config = join(f.root, "registry.json");
+		await addWorkspace(config, { name: "first", path: f.first, group: "demo" });
+		await addWorkspace(config, {
+			name: "second",
+			path: f.second,
+			group: "demo",
+		});
+		const registry = await readRegistry(config);
+		// Inside a workspace, from a subfolder too; outside, a clear code.
+		await mkdir(join(f.second, "src"), { recursive: true });
+		assert.equal(
+			(await workspaceAt(registry, join(f.second, "src"))).name,
+			"second",
+		);
+		await assert.rejects(workspaceAt(registry, f.root), {
+			code: "NOT_A_WORKSPACE",
+		});
+		// A dirty workspace is not free; the clean one is claimed, and claiming again renews it.
+		await writeFile(join(f.first, "hello.txt"), "local edit\n");
+		const claimed = await claimWorkspace(registry.workspaces, {
+			holder: "codex-1",
+			note: "task",
+		});
+		assert.equal(claimed.workspace.name, "second");
+		assert.equal(claimed.renewed, false);
+		const again = await claimWorkspace(registry.workspaces, {
+			holder: "codex-1",
+		});
+		assert.equal(again.workspace.name, "second");
+		assert.equal(again.renewed, true);
+		assert.equal(again.lease.note, "task");
+		// Nothing else is free: one is leased, the other dirty.
+		await assert.rejects(
+			claimWorkspace(registry.workspaces, { holder: "codex-2" }),
+			{
+				code: "NO_FREE_WORKSPACE",
+			},
+		);
+		await assert.rejects(
+			claimWorkspace(registry.workspaces, { holder: "bad name" }),
+			{
+				code: "LEASE_HOLDER",
+			},
+		);
+
+		// CLI: CLONELANE_HOLDER stands in for --holder and --as, and "here" is the cwd.
+		const cli = (args: string[], cwd: string, holder?: string) =>
+			exec(
+				process.execPath,
+				[resolve("src/cli.ts"), ...args, "--config", config],
+				{
+					cwd,
+					encoding: "utf8",
+					env: { ...process.env, CLONELANE_HOLDER: holder ?? "" },
+				},
+			);
+		const here = JSON.parse(
+			(await cli(["here"], join(f.second, "src"))).stdout,
+		);
+		assert.equal(here.name, "second");
+		assert.equal(here.lease.holder, "codex-1");
+		// Leased by codex-1: a sync as anyone else skips it, as codex-1 does not.
+		const skipped = JSON.parse(
+			(await cli(["sync", "--dry-run"], f.second)).stdout,
+		);
+		assert.equal(
+			skipped.find((item: { name: string }) => item.name === "second")?.reason,
+			"leased",
+		);
+		const own = JSON.parse(
+			(await cli(["sync", "--dry-run"], f.second, "codex-1")).stdout,
+		);
+		assert.notEqual(
+			own.find((item: { name: string }) => item.name === "second")?.reason,
+			"leased",
+		);
+		await assert.rejects(
+			cli(["lease", "release"], f.second, "codex-2"),
+			/LEASED/,
+		);
+		const released = JSON.parse(
+			(await cli(["lease", "release"], f.second, "codex-1")).stdout,
+		);
+		assert.equal(released.workspace, "second");
+		assert.equal(released.released.holder, "codex-1");
+		// claim from inside the group defaults to that group and prints the path to work in.
+		const viaCli = JSON.parse(
+			(await cli(["claim", "--note", "fix"], f.first, "gemini")).stdout,
+		);
+		assert.equal(viaCli.workspace, "second");
+		assert.equal(viaCli.holder, "gemini");
+		assert.equal(viaCli.path, (await readRegistry(config)).workspaces[1]?.path);
+		await assert.rejects(cli(["claim"], f.root, "gemini"), /USAGE/);
+		await assert.rejects(cli(["claim", "--group", "demo"], f.root), /USAGE/);
+
+		// agent install --project writes the skill for Claude and for .agents tools.
+		const installed = JSON.parse(
+			(await cli(["agent", "install", "--project"], f.root)).stdout,
+		);
+		assert.deepEqual(installed.installed, [
+			join(f.root, ".claude", "skills", "clonelane", "SKILL.md"),
+			join(f.root, ".agents", "skills", "clonelane", "SKILL.md"),
+		]);
+		const skill = await readFile(installed.installed[1], "utf8");
+		assert.match(skill, /^---\nname: clonelane\ndescription: /);
 	});
 
 	test("dry run does not fetch or create recovery refs; explicit fetch then fast-forward updates master", async (t) => {

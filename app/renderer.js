@@ -577,6 +577,18 @@ function renderWorkspace(state) {
 				{ className: "card-tools" },
 				showGroup && el("span", { className: "group-tag" }, workspace.group),
 				state.lease &&
+					state.lease.holder !== "?" &&
+					el(
+						"button",
+						{
+							type: "button",
+							className: "small",
+							ariaLabel: `Renew the lease on ${workspace.name} for 2 more hours`,
+							onclick: () => renewWorkspace(workspace, state.lease),
+						},
+						"Renew",
+					),
+				state.lease &&
 					el(
 						"button",
 						{
@@ -910,6 +922,29 @@ async function takeWorkspace(event) {
 	await refresh();
 	say(
 		`Leased ${name} to ${lease.holder}. Sync, env and restore skip it until it is released.`,
+	);
+}
+
+// Two more hours past the current end, as the same holder (so the note and start stay).
+async function renewWorkspace(workspace, lease) {
+	const left = Math.max(
+		0,
+		Math.ceil((Date.parse(lease.until) - Date.now()) / 60_000),
+	);
+	const renewed = await call(
+		"takeLease",
+		{
+			name: workspace.name,
+			holder: lease.holder,
+			// Actions take strings only.
+			minutes: String(Math.min(left + 120, 7 * 24 * 60)),
+		},
+		{ busy: "Renewing…" },
+	);
+	if (!renewed) return;
+	await refresh();
+	say(
+		`Renewed ${renewed.holder}'s lease on ${workspace.name} ${untilText(renewed.until)}.`,
 	);
 }
 
